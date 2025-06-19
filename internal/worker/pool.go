@@ -6,20 +6,26 @@ import (
 )
 
 // Task represents a unit of work for the worker pool
-// (Stub for now; will be expanded later)
-type Task interface{}
+// Now returns an error from Process() for retry logic
+//
+type Task interface {
+	Process() error
+}
 
 // WorkerPool manages a pool of worker goroutines
 // and a queue of tasks to process
 //
 type WorkerPool struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	workers  int
-	resizeMu sync.Mutex
-	tasks    chan Task // buffered channel for tasks
-	queueCap int      // capacity of the task queue
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	workers     int
+	resizeMu    sync.Mutex
+	tasks       chan Task // buffered channel for tasks
+	queueCap    int      // capacity of the task queue
+	deadLetter  []Task
+	deadLetterMu sync.Mutex
+	maxRetries  int
 }
 
 // NewWorkerPool creates a new WorkerPool with the given number of workers and queue capacity
@@ -27,11 +33,13 @@ func NewWorkerPool(workers int) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
 	queueCap := 10 // default queue size
 	return &WorkerPool{
-		ctx:      ctx,
-		cancel:   cancel,
-		workers:  workers,
-		tasks:    make(chan Task, queueCap),
-		queueCap: queueCap,
+		ctx:        ctx,
+		cancel:     cancel,
+		workers:    workers,
+		tasks:      make(chan Task, queueCap),
+		queueCap:   queueCap,
+		maxRetries: 10,
+		deadLetter: make([]Task, 0),
 	}
 }
 
@@ -73,10 +81,30 @@ func (p *WorkerPool) workerLoop() {
 		select {
 		case <-p.ctx.Done():
 			return
-		case <-p.tasks:
-			// In a full implementation, process the task here
+		case task := <-p.tasks:
+			p.processWithRetry(task, 0)
 		}
 	}
+}
+
+// processWithRetry processes a task, retrying up to maxRetries, then moves to dead letter
+func (p *WorkerPool) processWithRetry(task Task, attempt int) {
+	if err := task.Process(); err != nil {
+		if attempt+1 < p.maxRetries {
+			p.processWithRetry(task, attempt+1)
+		} else {
+			p.deadLetterMu.Lock()
+			p.deadLetter = append(p.deadLetter, task)
+			p.deadLetterMu.Unlock()
+		}
+	}
+}
+
+// DeadLetterCount returns the number of tasks in the dead letter queue
+func (p *WorkerPool) DeadLetterCount() int {
+	p.deadLetterMu.Lock()
+	defer p.deadLetterMu.Unlock()
+	return len(p.deadLetter)
 }
 
 // Workers returns the number of worker goroutines
