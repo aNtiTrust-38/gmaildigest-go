@@ -3,13 +3,16 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 )
 
-// JobHandler is a function that processes a job
+// JobHandler is a function that handles a specific type of job
 type JobHandler func(ctx context.Context, job *Job) error
 
-// JobHandlerRegistry maintains a map of job type to handler functions
+// JobHandlerRegistry manages job type to handler mappings
 type JobHandlerRegistry struct {
+	mu       sync.RWMutex
 	handlers map[string]JobHandler
 }
 
@@ -20,18 +23,41 @@ func NewJobHandlerRegistry() *JobHandlerRegistry {
 	}
 }
 
-// RegisterHandler registers a handler function for a job type
+// RegisterHandler registers a handler for a job type
 func (r *JobHandlerRegistry) RegisterHandler(jobType string, handler JobHandler) {
+	if jobType == "" || handler == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.handlers[jobType] = handler
 }
 
-// GetHandler returns the handler function for a job type
-func (r *JobHandlerRegistry) GetHandler(jobType string) (JobHandler, error) {
-	handler, ok := r.handlers[jobType]
-	if !ok {
-		return nil, fmt.Errorf("no handler registered for job type: %s", jobType)
+// GetHandler returns the handler for a job type
+func (r *JobHandlerRegistry) GetHandler(jobType string) JobHandler {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.handlers[jobType]
+}
+
+// UnregisterHandler removes a handler for a job type
+func (r *JobHandlerRegistry) UnregisterHandler(jobType string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.handlers, jobType)
+}
+
+// ListHandlerTypes returns a list of registered job types
+func (r *JobHandlerRegistry) ListHandlerTypes() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	types := make([]string, 0, len(r.handlers))
+	for jobType := range r.handlers {
+		types = append(types, jobType)
 	}
-	return handler, nil
+	return types
 }
 
 // JobTask wraps a Job to implement the worker.Task interface
@@ -51,44 +77,82 @@ func NewJobTask(ctx context.Context, job *Job, registry *JobHandlerRegistry) *Jo
 	}
 }
 
-// Process implements the worker.Task interface
-func (t *JobTask) Process() error {
-	handler, err := t.registry.GetHandler(t.job.Type)
-	if err != nil {
+// Execute implements the worker.Task interface
+func (t *JobTask) Execute(ctx context.Context) error {
+	if t.job == nil {
+		return fmt.Errorf("job cannot be nil")
+	}
+
+	handler := t.registry.GetHandler(t.job.Type)
+	if handler == nil {
+		return fmt.Errorf("no handler registered for job type: %s", t.job.Type)
+	}
+
+	return handler(ctx, t.job)
+}
+
+// OnSuccess implements the worker.Task interface
+func (t *JobTask) OnSuccess() {
+	if t.scheduler == nil {
+		return
+	}
+
+	t.scheduler.JobMu.Lock()
+	defer t.scheduler.JobMu.Unlock()
+
+	// Update job status
+	t.job.Status = JobStatusCompleted
+	t.job.LastError = ""
+	t.job.RetryCount = 0
+
+	// Calculate next run time based on schedule
+	t.job.NextRun = t.scheduler.nextRunTime(t.job.Schedule)
+
+	// Persist changes
+	if err := t.scheduler.store.UpdateJob(t.ctx, t.job); err != nil {
+		// Log error but continue
+		fmt.Printf("Failed to update job status: %v\n", err)
+	}
+
+	// Update in-memory job
+	t.scheduler.Jobs[t.job.ID] = t.job
+	t.scheduler.signalCronWakeup()
+}
+
+// OnFailure implements the worker.Task interface
+func (t *JobTask) OnFailure(err error) {
+	if t.scheduler == nil {
+		return
+	}
+
+	t.scheduler.JobMu.Lock()
+	defer t.scheduler.JobMu.Unlock()
+
+	// Update job status
+	t.job.Status = JobStatusFailed
+	t.job.LastError = err.Error()
+	t.job.RetryCount++
+
+	// Calculate retry delay using exponential backoff
+	delay := time.Duration(t.job.RetryCount*t.job.RetryCount) * time.Minute
+	if delay > 24*time.Hour {
+		delay = 24 * time.Hour
+	}
+	t.job.NextRun = time.Now().Add(delay)
+
+	// Check if max retries exceeded
+	if t.job.RetryCount >= 5 { // Max 5 retries
 		t.job.Status = JobStatusFailed
-		t.job.LastError = fmt.Sprintf("failed to get handler: %v", err)
-		t.job.RetryCount++
-		if t.job.RetryCount >= 10 {
-			t.job.Status = JobStatusDead
-		}
-		return fmt.Errorf("failed to get handler for job %s: %w", t.job.Type, err)
+		t.job.NextRun = time.Time{} // Zero time indicates no more retries
 	}
 
-	err = handler(t.ctx, t.job)
-	if err != nil {
-		t.job.Status = JobStatusFailed
-		t.job.LastError = err.Error()
-		t.job.RetryCount++
-		if t.job.RetryCount >= 10 {
-			t.job.Status = JobStatusDead
-		}
-	} else {
-		t.job.Status = JobStatusCompleted
-		t.job.LastError = ""
-		t.job.RetryCount = 0
-		t.job.NextRun = t.scheduler.nextRunTime(t.job.Schedule)
+	// Persist changes
+	if err := t.scheduler.store.UpdateJob(t.ctx, t.job); err != nil {
+		// Log error but continue
+		fmt.Printf("Failed to update job status: %v\n", err)
 	}
 
-	// Update job in store and memory
-	if t.scheduler != nil {
-		t.scheduler.JobMu.Lock()
-		defer t.scheduler.JobMu.Unlock()
-
-		if err := t.scheduler.store.UpdateJob(t.ctx, t.job); err != nil {
-			return fmt.Errorf("failed to update job status: %w", err)
-		}
-		t.scheduler.Jobs[t.job.ID] = t.job
-	}
-
-	return err
+	// Update in-memory job
+	t.scheduler.Jobs[t.job.ID] = t.job
+	t.scheduler.signalCronWakeup()
 } 
