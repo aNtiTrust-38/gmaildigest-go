@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 	"github.com/google/uuid"
+	"gmaildigest-go/internal/worker"
 )
 
 // Job represents a scheduled job (simplified for now)
@@ -21,26 +22,43 @@ type Job struct {
 	LastRun    time.Time
 }
 
+// JobTask wraps a Job and implements worker.Task
+//
+type JobTask struct {
+	Job *Job
+	Exec func(*Job) error // allows test injection
+}
+
+func (jt *JobTask) Process() error {
+	if jt.Exec != nil {
+		return jt.Exec(jt.Job)
+	}
+	// Default: mark job as executed (stub)
+	return nil
+}
+
 // Scheduler manages job scheduling, deduplication, and persistence
 type Scheduler struct {
 	db         *sql.DB
-	jobs       map[string]*Job // jobID -> Job
-	jobMu      sync.Mutex
+	Jobs       map[string]*Job // jobID -> Job (exported for testing)
+	JobMu      sync.Mutex      // exported for testing
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	cronWakeup chan struct{}
+	pool       *worker.WorkerPool
 }
 
 // NewScheduler creates a new Scheduler and loads jobs from the database
-func NewScheduler(ctx context.Context, db *sql.DB) (*Scheduler, error) {
+func NewScheduler(ctx context.Context, db *sql.DB, pool *worker.WorkerPool) (*Scheduler, error) {
 	cctx, cancel := context.WithCancel(ctx)
 	s := &Scheduler{
 		db:         db,
-		jobs:       make(map[string]*Job),
+		Jobs:       make(map[string]*Job),
 		ctx:        cctx,
 		cancel:     cancel,
 		cronWakeup: make(chan struct{}, 1),
+		pool:       pool,
 	}
 	if err := s.loadJobsFromDB(); err != nil {
 		return nil, err
@@ -67,17 +85,17 @@ func (s *Scheduler) loadJobsFromDB() error {
 		if lastRun.Valid {
 			j.LastRun = lastRun.Time
 		}
-		s.jobs[j.ID] = &j
+		s.Jobs[j.ID] = &j
 	}
 	return nil
 }
 
 // ScheduleJob schedules a new job or deduplicates if one exists for user/type/schedule
 func (s *Scheduler) ScheduleJob(userID, jobType, schedule, payload string) (*Job, error) {
-	s.jobMu.Lock()
-	defer s.jobMu.Unlock()
+	s.JobMu.Lock()
+	defer s.JobMu.Unlock()
 	// Deduplication: check for existing job
-	for _, job := range s.jobs {
+	for _, job := range s.Jobs {
 		if job.UserID == userID && job.Type == jobType && job.Schedule == schedule {
 			// Update payload and reset status
 			job.Payload = payload
@@ -103,7 +121,7 @@ func (s *Scheduler) ScheduleJob(userID, jobType, schedule, payload string) (*Job
 		Status:   "scheduled",
 		NextRun:  nextRun,
 	}
-	s.jobs[id] = job
+	s.Jobs[id] = job
 	if err := s.persistJob(job); err != nil {
 		return nil, err
 	}
@@ -143,7 +161,7 @@ func (s *Scheduler) Start() {
 	go s.schedulingLoop()
 }
 
-// schedulingLoop waits for the next job and triggers execution (stub for now)
+// schedulingLoop waits for the next job and triggers execution
 func (s *Scheduler) schedulingLoop() {
 	defer s.wg.Done()
 	for {
@@ -154,7 +172,8 @@ func (s *Scheduler) schedulingLoop() {
 			timer.Stop()
 			return
 		case <-timer.C:
-			// In a full implementation, jobs due at 'next' would be dispatched here
+			// Dispatch jobs due at 'next' to the WorkerPool
+			s.dispatchDueJobs(next)
 		case <-s.cronWakeup:
 			timer.Stop()
 			continue
@@ -162,12 +181,32 @@ func (s *Scheduler) schedulingLoop() {
 	}
 }
 
+// dispatchDueJobs submits all jobs due at or before 'now' to the WorkerPool
+func (s *Scheduler) dispatchDueJobs(now time.Time) {
+	s.JobMu.Lock()
+	defer s.JobMu.Unlock()
+	for _, job := range s.Jobs {
+		if job.Status == "scheduled" && !job.NextRun.After(now) {
+			jt := &JobTask{Job: job}
+			ok := s.pool.Submit(jt)
+			if ok {
+				job.Status = "running"
+				job.LastRun = now
+				// Optionally: update job.NextRun for recurring jobs
+				_ = s.persistJob(job)
+			} else {
+				// Backpressure: could not submit, reschedule or log
+			}
+		}
+	}
+}
+
 // findNextJobTime finds the soonest NextRun among scheduled jobs
 func (s *Scheduler) findNextJobTime() time.Time {
-	s.jobMu.Lock()
-	defer s.jobMu.Unlock()
+	s.JobMu.Lock()
+	defer s.JobMu.Unlock()
 	next := time.Now().Add(24 * time.Hour)
-	for _, job := range s.jobs {
+	for _, job := range s.Jobs {
 		if job.Status == "scheduled" && job.NextRun.Before(next) {
 			next = job.NextRun
 		}

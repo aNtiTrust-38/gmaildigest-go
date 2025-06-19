@@ -2,8 +2,12 @@ package scheduler_test
 
 import (
 	"testing"
-	"github.com/stretchr/testify/assert"
 	"context"
+	"time"
+	"database/sql"
+	_ "github.com/mattn/go-sqlite3"
+	"gmaildigest-go/internal/worker"
+	"gmaildigest-go/internal/scheduler"
 )
 
 // Test: Scheduler initialization
@@ -54,4 +58,58 @@ func TestScheduler_GenericPayloadSupport(t *testing.T) {
 // Test: Retry and dead letter handling
 func TestScheduler_DeadLetterHandling(t *testing.T) {
 	// TODO: Test that jobs are retried up to 10 times and then moved to a dead letter queue/failure routine
+}
+
+// Test: Scheduler dispatches jobs to WorkerPool
+func TestScheduler_DispatchesJobsToWorkerPool(t *testing.T) {
+	// Setup in-memory SQLite DB
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	// Migrate jobs table
+	err = scheduler.MigrateJobsTable(ctx, db)
+	if err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	// Setup WorkerPool and Scheduler
+	pool := worker.NewWorkerPool(2)
+	pool.Start()
+	defer pool.Stop()
+
+	executed := make(chan struct{}, 1)
+	sched, err := scheduler.NewScheduler(ctx, db, pool)
+	if err != nil {
+		t.Fatalf("failed to create scheduler: %v", err)
+	}
+
+	// Schedule a job due now
+	job, err := sched.ScheduleJob("user1", "test", "* * * * *", "payload")
+	if err != nil {
+		t.Fatalf("failed to schedule job: %v", err)
+	}
+
+	// Inject Exec function to signal execution
+	sched.JobMu.Lock()
+	for _, j := range sched.Jobs {
+		if j.ID == job.ID {
+			jt := &scheduler.JobTask{Job: j, Exec: func(_ *scheduler.Job) error {
+				executed <- struct{}{}
+				return nil
+			}}
+			pool.Submit(jt)
+		}
+	}
+	sched.JobMu.Unlock()
+
+	// Wait for execution
+	select {
+	case <-executed:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("job was not executed by worker pool")
+	}
 }
