@@ -1,0 +1,19 @@
+[project]
+name = "Gmail Digest Assistant v3.0"
+description = "Milestone-driven, TDD-based Go application for Gmail digest delivery via Telegram."
+
+[files]
+readme = "README.md"
+roadmap = "instructions.md"
+
+[goals]
+primary = "Follow instructions.md as the authoritative roadmap."
+testing = "Use TDD-first development. No production code without tests."
+milestones = "M1 through Final as defined in instructions.md."
+deliverable = "Production-ready Go binary with complete test coverage and install scripts."
+
+[restrictions]
+secrets = "Do not hardcode any Gmail API keys or tokens — use config-driven approach."
+oauth = "Implement safe OAuth refresh with error handling."
+persistence = "Use durable job persistence — no in-memory-only queues."
+observability = "Do not ship without metrics and logging."
