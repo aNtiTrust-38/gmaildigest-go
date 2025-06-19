@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"gmaildigest-go/internal/metrics"
 	"sync"
 	"time"
 )
@@ -88,11 +89,19 @@ func (t *JobTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("no handler registered for job type: %s", t.job.Type)
 	}
 
-	return handler(ctx, t.job)
+	startTime := time.Now()
+	err := handler(ctx, t.job)
+	duration := time.Since(startTime)
+
+	metrics.JobDuration.WithLabelValues(t.job.Type).Observe(duration.Seconds())
+
+	return err
 }
 
 // OnSuccess implements the worker.Task interface
 func (t *JobTask) OnSuccess() {
+	metrics.JobsInFlight.Dec()
+	metrics.JobsCompleted.WithLabelValues(t.job.Type).Inc()
 	if t.scheduler == nil {
 		return
 	}
@@ -121,6 +130,9 @@ func (t *JobTask) OnSuccess() {
 
 // OnFailure implements the worker.Task interface
 func (t *JobTask) OnFailure(err error) {
+	metrics.JobsInFlight.Dec()
+	metrics.JobsFailed.WithLabelValues(t.job.Type).Inc()
+	metrics.JobRetries.WithLabelValues(t.job.Type).Inc()
 	if t.scheduler == nil {
 		return
 	}

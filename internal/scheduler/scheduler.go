@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"gmaildigest-go/internal/metrics"
 	"sync"
 	"time"
 
@@ -108,6 +109,7 @@ func (s *Scheduler) ScheduleJob(userID, jobType, schedule string, payload interf
 		return nil, err
 	}
 
+	metrics.JobsScheduled.WithLabelValues(jobType).Inc()
 	s.Jobs[job.ID] = job
 	s.signalCronWakeup()
 	return job, nil
@@ -172,6 +174,7 @@ func (s *Scheduler) dispatchDueJobs(now time.Time) {
 			jt.scheduler = s // Set the scheduler
 			ok := s.pool.Submit(jt)
 			if ok {
+				metrics.JobsInFlight.Inc()
 				job.Status = JobStatusRunning
 				job.LastRun = &now
 				if err := s.store.UpdateJob(s.ctx, job); err != nil {
