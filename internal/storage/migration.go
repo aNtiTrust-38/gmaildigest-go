@@ -1,0 +1,219 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"sync"
+	"time"
+)
+
+// migrationLock ensures only one migration can run at a time
+var migrationLock sync.Mutex
+
+// Migration represents a database migration
+type Migration struct {
+	Version     int64
+	Description string
+	SQL         string
+}
+
+// migrations contains all database migrations in order
+var migrations = []Migration{
+	{
+		Version:     1,
+		Description: "Create initial schema",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS schema_migrations (
+				version INTEGER PRIMARY KEY,
+				applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);
+
+			CREATE TABLE IF NOT EXISTS users (
+				telegram_id INTEGER PRIMARY KEY,
+				gmail_user_id TEXT UNIQUE NOT NULL,
+				google_token_valid BOOLEAN NOT NULL DEFAULT FALSE,
+				digest_interval INTEGER NOT NULL,
+				last_digest_sent DATETIME,
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_users_gmail_user_id ON users(gmail_user_id);
+
+			CREATE TABLE IF NOT EXISTS tokens (
+				user_id TEXT PRIMARY KEY REFERENCES users(gmail_user_id) ON DELETE CASCADE,
+				token BLOB NOT NULL,
+				nonce BLOB NOT NULL,
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);
+
+			CREATE TABLE IF NOT EXISTS processed_emails (
+				message_id TEXT NOT NULL,
+				user_id TEXT NOT NULL REFERENCES users(gmail_user_id) ON DELETE CASCADE,
+				processed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (message_id, user_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_processed_emails_user_id ON processed_emails(user_id);
+			CREATE INDEX IF NOT EXISTS idx_processed_emails_processed_at ON processed_emails(processed_at);
+		`,
+	},
+	{
+		Version:     2,
+		Description: "Add triggers for updated_at",
+		SQL: `
+			CREATE TRIGGER IF NOT EXISTS users_updated_at
+			AFTER UPDATE ON users
+			BEGIN
+				UPDATE users SET updated_at = CURRENT_TIMESTAMP
+				WHERE telegram_id = NEW.telegram_id;
+			END;
+
+			CREATE TRIGGER IF NOT EXISTS tokens_updated_at
+			AFTER UPDATE ON tokens
+			BEGIN
+				UPDATE tokens SET updated_at = CURRENT_TIMESTAMP
+				WHERE user_id = NEW.user_id;
+			END;
+		`,
+	},
+}
+
+// Migrate applies all pending database migrations
+func (s *SQLiteStorage) Migrate(ctx context.Context) error {
+	// Ensure only one migration runs at a time
+	migrationLock.Lock()
+	defer migrationLock.Unlock()
+
+	// Begin transaction
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Enable foreign key constraints
+	_, err = tx.ExecContext(ctx, "PRAGMA foreign_keys = ON")
+	if err != nil {
+		return fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
+
+	// Create migrations table if it doesn't exist
+	_, err = tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create migrations table: %w", err)
+	}
+
+	// Get current version
+	var currentVersion int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&currentVersion)
+	if err != nil {
+		return fmt.Errorf("failed to get current version: %w", err)
+	}
+
+	// Apply pending migrations
+	for _, migration := range migrations {
+		if migration.Version <= currentVersion {
+			continue
+		}
+
+		// Apply migration
+		_, err = tx.ExecContext(ctx, migration.SQL)
+		if err != nil {
+			return fmt.Errorf("failed to apply migration %d: %w", migration.Version, err)
+		}
+
+		// Record migration
+		_, err = tx.ExecContext(ctx,
+			"INSERT INTO schema_migrations (version) VALUES (?)",
+			migration.Version)
+		if err != nil {
+			return fmt.Errorf("failed to record migration %d: %w", migration.Version, err)
+		}
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// GetMigrationStatus returns the current migration status
+func (s *SQLiteStorage) GetMigrationStatus(ctx context.Context) ([]MigrationStatus, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT version, applied_at
+		FROM schema_migrations
+		ORDER BY version
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query migrations: %w", err)
+	}
+	defer rows.Close()
+
+	var status []MigrationStatus
+	for rows.Next() {
+		var s MigrationStatus
+		err := rows.Scan(&s.Version, &s.AppliedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan migration: %w", err)
+		}
+		status = append(status, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate migrations: %w", err)
+	}
+
+	return status, nil
+}
+
+// MigrationStatus represents the status of a migration
+type MigrationStatus struct {
+	Version   int64
+	AppliedAt time.Time
+}
+
+// Transaction migration methods
+
+// GetMigrationStatus returns the current migration status within a transaction
+func (t *Transaction) GetMigrationStatus() ([]MigrationStatus, error) {
+	if t.closed {
+		return nil, ErrTransactionClosed
+	}
+
+	rows, err := t.tx.Query(`
+		SELECT version, applied_at
+		FROM schema_migrations
+		ORDER BY version
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query migrations: %w", err)
+	}
+	defer rows.Close()
+
+	var status []MigrationStatus
+	for rows.Next() {
+		var s MigrationStatus
+		err := rows.Scan(&s.Version, &s.AppliedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan migration: %w", err)
+		}
+		status = append(status, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate migrations: %w", err)
+	}
+
+	return status, nil
+} 

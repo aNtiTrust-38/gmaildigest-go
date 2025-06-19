@@ -1,0 +1,310 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+var (
+	ErrInvalidInput = errors.New("invalid input")
+	ErrNotFound     = errors.New("not found")
+)
+
+// User represents a user in the system
+type User struct {
+	TelegramID     int64
+	GmailUserID    string
+	DigestInterval time.Duration
+	LastDigestSent *time.Time
+	TokenValid     bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// SQLiteStorage handles all database operations
+type SQLiteStorage struct {
+	db *sql.DB
+}
+
+// NewSQLiteStorage creates a new SQLiteStorage instance
+func NewSQLiteStorage(db *sql.DB) *SQLiteStorage {
+	return &SQLiteStorage{db: db}
+}
+
+// validateInput checks if the input parameters are valid
+func validateInput(telegramID int64, gmailUserID string, digestInterval time.Duration) error {
+	if telegramID <= 0 {
+		return fmt.Errorf("%w: telegram ID must be positive", ErrInvalidInput)
+	}
+	if gmailUserID == "" {
+		return fmt.Errorf("%w: gmail user ID cannot be empty", ErrInvalidInput)
+	}
+	if digestInterval <= 0 {
+		return fmt.Errorf("%w: digest interval must be positive", ErrInvalidInput)
+	}
+	return nil
+}
+
+// validateTokenInput checks if the token input parameters are valid
+func validateTokenInput(userID string, token, nonce []byte) error {
+	if userID == "" {
+		return fmt.Errorf("%w: user ID cannot be empty", ErrInvalidInput)
+	}
+	if len(token) == 0 {
+		return fmt.Errorf("%w: token cannot be empty", ErrInvalidInput)
+	}
+	if len(nonce) == 0 {
+		return fmt.Errorf("%w: nonce cannot be empty", ErrInvalidInput)
+	}
+	return nil
+}
+
+// validateEmailInput checks if the email input parameters are valid
+func validateEmailInput(messageID, userID string) error {
+	if messageID == "" {
+		return fmt.Errorf("%w: message ID cannot be empty", ErrInvalidInput)
+	}
+	if userID == "" {
+		return fmt.Errorf("%w: user ID cannot be empty", ErrInvalidInput)
+	}
+	return nil
+}
+
+// Migrate applies all database migrations
+func (s *SQLiteStorage) Migrate(ctx context.Context) error {
+	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS tokens (
+			user_id TEXT PRIMARY KEY,
+			encrypted_token BLOB NOT NULL,
+			nonce BLOB NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS users (
+			telegram_id INTEGER PRIMARY KEY,
+			gmail_user_id TEXT UNIQUE,
+			digest_interval INTEGER DEFAULT 7200,
+			last_digest_sent DATETIME,
+			google_token_valid BOOLEAN DEFAULT FALSE,
+			preferences TEXT DEFAULT '{}',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS processed_emails (
+			message_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (message_id, user_id)
+		)`,
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	for i, migration := range migrations {
+		version := i + 1
+
+		// Check if migration was already applied
+		var exists bool
+		err := tx.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?)",
+			version).Scan(&exists)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to check migration status: %w", err)
+		}
+
+		if !exists {
+			// Apply migration
+			if _, err := tx.ExecContext(ctx, migration); err != nil {
+				return fmt.Errorf("failed to apply migration %d: %w", version, err)
+			}
+
+			// Record migration
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO schema_migrations (version) VALUES (?)",
+				version); err != nil {
+				return fmt.Errorf("failed to record migration %d: %w", version, err)
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+// StoreToken stores or updates an encrypted token and its nonce
+func (s *SQLiteStorage) StoreToken(ctx context.Context, userID string, token, nonce []byte) error {
+	if err := validateTokenInput(userID, token, nonce); err != nil {
+		return err
+	}
+
+	query := `
+		INSERT INTO tokens (user_id, encrypted_token, nonce, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(user_id) DO UPDATE SET
+			encrypted_token = excluded.encrypted_token,
+			nonce = excluded.nonce,
+			updated_at = CURRENT_TIMESTAMP
+	`
+	_, err := s.db.ExecContext(ctx, query, userID, token, nonce)
+	if err != nil {
+		return fmt.Errorf("failed to store token: %w", err)
+	}
+	return nil
+}
+
+// GetToken retrieves an encrypted token and its nonce
+func (s *SQLiteStorage) GetToken(ctx context.Context, userID string) ([]byte, []byte, error) {
+	if userID == "" {
+		return nil, nil, fmt.Errorf("%w: user ID cannot be empty", ErrInvalidInput)
+	}
+
+	var token, nonce []byte
+	err := s.db.QueryRowContext(ctx,
+		"SELECT encrypted_token, nonce FROM tokens WHERE user_id = ?",
+		userID).Scan(&token, &nonce)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, fmt.Errorf("%w: token not found for user %s", ErrNotFound, userID)
+		}
+		return nil, nil, fmt.Errorf("failed to get token: %w", err)
+	}
+	return token, nonce, nil
+}
+
+// CreateUser creates a new user
+func (s *SQLiteStorage) CreateUser(ctx context.Context, telegramID int64, gmailUserID string, digestInterval time.Duration) error {
+	if err := validateInput(telegramID, gmailUserID, digestInterval); err != nil {
+		return err
+	}
+
+	query := `
+		INSERT INTO users (
+			telegram_id, gmail_user_id, digest_interval
+		) VALUES (?, ?, ?)
+	`
+	_, err := s.db.ExecContext(ctx, query, telegramID, gmailUserID, int64(digestInterval.Seconds()))
+	if err != nil {
+		return fmt.Errorf("failed to create user: %w", err)
+	}
+	return nil
+}
+
+// GetUser retrieves a user by their Telegram ID
+func (s *SQLiteStorage) GetUser(ctx context.Context, telegramID int64) (*User, error) {
+	if telegramID <= 0 {
+		return nil, fmt.Errorf("%w: telegram ID must be positive", ErrInvalidInput)
+	}
+
+	user := &User{}
+	var digestIntervalSecs int64
+	var lastDigestSent sql.NullTime
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 
+			telegram_id, gmail_user_id, digest_interval,
+			last_digest_sent, google_token_valid,
+			created_at, updated_at
+		FROM users 
+		WHERE telegram_id = ?`,
+		telegramID).Scan(
+		&user.TelegramID,
+		&user.GmailUserID,
+		&digestIntervalSecs,
+		&lastDigestSent,
+		&user.TokenValid,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: user not found with ID %d", ErrNotFound, telegramID)
+		}
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	user.DigestInterval = time.Duration(digestIntervalSecs) * time.Second
+	if lastDigestSent.Valid {
+		user.LastDigestSent = &lastDigestSent.Time
+	}
+
+	return user, nil
+}
+
+// UpdateUser updates a user's digest interval
+func (s *SQLiteStorage) UpdateUser(ctx context.Context, telegramID int64, digestInterval time.Duration) error {
+	if telegramID <= 0 {
+		return fmt.Errorf("%w: telegram ID must be positive", ErrInvalidInput)
+	}
+	if digestInterval <= 0 {
+		return fmt.Errorf("%w: digest interval must be positive", ErrInvalidInput)
+	}
+
+	query := `
+		UPDATE users 
+		SET digest_interval = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE telegram_id = ?
+	`
+	result, err := s.db.ExecContext(ctx, query, int64(digestInterval.Seconds()), telegramID)
+	if err != nil {
+		return fmt.Errorf("failed to update user: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: user not found with ID %d", ErrNotFound, telegramID)
+	}
+
+	return nil
+}
+
+// MarkEmailProcessed marks an email as processed for a user
+func (s *SQLiteStorage) MarkEmailProcessed(ctx context.Context, messageID, userID string) error {
+	if err := validateEmailInput(messageID, userID); err != nil {
+		return err
+	}
+
+	query := `
+		INSERT OR REPLACE INTO processed_emails (
+			message_id, user_id
+		) VALUES (?, ?)
+	`
+	_, err := s.db.ExecContext(ctx, query, messageID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to mark email as processed: %w", err)
+	}
+	return nil
+}
+
+// IsEmailProcessed checks if an email has been processed
+func (s *SQLiteStorage) IsEmailProcessed(ctx context.Context, messageID, userID string) (bool, error) {
+	if err := validateEmailInput(messageID, userID); err != nil {
+		return false, err
+	}
+
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM processed_emails 
+			WHERE message_id = ? AND user_id = ?
+		)`,
+		messageID, userID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to check email status: %w", err)
+	}
+	return exists, nil
+} 
