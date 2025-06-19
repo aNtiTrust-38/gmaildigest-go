@@ -3,7 +3,6 @@ package worker_test
 import (
 	"testing"
 	"github.com/stretchr/testify/assert"
-	"context"
 	"gmaildigest-go/internal/worker"
 	"sync"
 	"time"
@@ -116,7 +115,27 @@ func TestWorkerPool_JobSubmissionBackpressure(t *testing.T) {
 
 // Test: Worker pool monitoring and stats
 func TestWorkerPool_MonitoringStats(t *testing.T) {
-	t.Skip("not implemented")
-	_ = context.Background()
-	assert.True(t, true)
+	pool := worker.NewWorkerPool(3)
+	pool.Start()
+	defer pool.Stop()
+
+	// Submit 5 tasks (queue size is 10, so all should be queued)
+	for i := 0; i < 5; i++ {
+		ok := pool.Submit(testTask{})
+		assert.True(t, ok)
+	}
+
+	stats := pool.Stats()
+	assert.Equal(t, 3, stats.ActiveWorkers, "Should report correct number of workers")
+	assert.GreaterOrEqual(t, stats.QueueLength, 0, "Queue length should be >= 0")
+	assert.Equal(t, 0, stats.DeadLetters, "No dead letters expected yet")
+
+	// Add a dead letter by submitting a failing retryTask
+	task := &retryTask{failCount: 20}
+	ok := pool.Submit(task)
+	assert.True(t, ok)
+	// Wait for it to be processed and dead-lettered
+	time.Sleep(100 * time.Millisecond)
+	stats = pool.Stats()
+	assert.Equal(t, 1, stats.DeadLetters, "Should report 1 dead letter")
 }

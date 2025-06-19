@@ -28,6 +28,14 @@ type WorkerPool struct {
 	maxRetries  int
 }
 
+// PoolStats holds monitoring information about the worker pool
+//
+type PoolStats struct {
+	ActiveWorkers int
+	QueueLength   int
+	DeadLetters   int
+}
+
 // NewWorkerPool creates a new WorkerPool with the given number of workers and queue capacity
 func NewWorkerPool(workers int) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -110,4 +118,13 @@ func (p *WorkerPool) DeadLetterCount() int {
 // Workers returns the number of worker goroutines
 func (p *WorkerPool) Workers() int {
 	return p.workers
+}
+
+// Stats returns current statistics about the worker pool
+func (p *WorkerPool) Stats() PoolStats {
+	return PoolStats{
+		ActiveWorkers: p.workers, // static for now; dynamic if resizing is implemented
+		QueueLength:   len(p.tasks),
+		DeadLetters:   p.DeadLetterCount(),
+	}
 } 
