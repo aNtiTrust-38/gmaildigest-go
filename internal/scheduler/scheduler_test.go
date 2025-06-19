@@ -1,4 +1,4 @@
-package scheduler_test
+package scheduler
 
 import (
 	"testing"
@@ -7,17 +7,45 @@ import (
 	"database/sql"
 	_ "github.com/mattn/go-sqlite3"
 	"gmaildigest-go/internal/worker"
-	"gmaildigest-go/internal/scheduler"
+	"encoding/json"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
 )
 
 // Test: Scheduler initialization
 func TestScheduler_NewScheduler(t *testing.T) {
-	// TODO: Test that a new Scheduler can be created and started
+	// Setup in-memory SQLite DB
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	pool := worker.NewWorkerPool(1)
+	scheduler, err := NewScheduler(ctx, db, pool)
+	require.NoError(t, err)
+	require.NotNil(t, scheduler)
 }
 
 // Test: Job scheduling and execution
 func TestScheduler_ScheduleJob(t *testing.T) {
-	// TODO: Test that jobs can be scheduled and executed at the correct time
+	// Setup in-memory SQLite DB
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	pool := worker.NewWorkerPool(1)
+	scheduler, err := NewScheduler(ctx, db, pool)
+	require.NoError(t, err)
+
+	// Schedule a job
+	payload := map[string]string{"test": "value"}
+	job, err := scheduler.ScheduleJob("user1", "test", "* * * * *", payload)
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	assert.Equal(t, "user1", job.UserID)
+	assert.Equal(t, "test", job.Type)
+	assert.Equal(t, "* * * * *", job.Schedule)
 }
 
 // Test: Recurring job handling
@@ -64,42 +92,41 @@ func TestScheduler_DeadLetterHandling(t *testing.T) {
 func TestScheduler_DispatchesJobsToWorkerPool(t *testing.T) {
 	// Setup in-memory SQLite DB
 	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatalf("failed to open db: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
-	ctx := context.Background()
 
-	// Setup WorkerPool and Scheduler
+	ctx := context.Background()
 	pool := worker.NewWorkerPool(2)
 	pool.Start()
 	defer pool.Stop()
 
 	executed := make(chan struct{}, 1)
-	sched, err := scheduler.NewScheduler(ctx, db, pool)
-	if err != nil {
-		t.Fatalf("failed to create scheduler: %v", err)
-	}
+	scheduler, err := NewScheduler(ctx, db, pool)
+	require.NoError(t, err)
+
+	// Register a test handler
+	scheduler.RegisterHandler("test", func(ctx context.Context, job *Job) error {
+		executed <- struct{}{}
+		return nil
+	})
+
+	// Start the scheduler
+	scheduler.Start()
+	defer scheduler.Stop()
+
+	// Wait for the scheduler to start
+	time.Sleep(100 * time.Millisecond)
 
 	// Schedule a job due now
 	payload := map[string]string{"test": "value"}
-	job, err := sched.ScheduleJob("user1", "test", "* * * * *", payload)
-	if err != nil {
-		t.Fatalf("failed to schedule job: %v", err)
-	}
+	job, err := scheduler.ScheduleJob("user1", "test", "* * * * *", payload)
+	require.NoError(t, err)
 
-	// Inject Exec function to signal execution
-	sched.JobMu.Lock()
-	for _, j := range sched.Jobs {
-		if j.ID == job.ID {
-			jt := &scheduler.JobTask{Job: j, Exec: func(_ *scheduler.Job) error {
-				executed <- struct{}{}
-				return nil
-			}}
-			pool.Submit(jt)
-		}
-	}
-	sched.JobMu.Unlock()
+	// Set the job's next run time to now
+	job.NextRun = time.Now()
+	err = scheduler.store.UpdateJob(ctx, job)
+	require.NoError(t, err)
+	scheduler.signalCronWakeup()
 
 	// Wait for execution
 	select {
@@ -108,4 +135,50 @@ func TestScheduler_DispatchesJobsToWorkerPool(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("job was not executed by worker pool")
 	}
+}
+
+func TestScheduler_RegisterTokenRefreshHandler(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	ctx := context.Background()
+	pool := worker.NewWorkerPool(1)
+	pool.Start()
+	defer pool.Stop()
+
+	scheduler, err := NewScheduler(ctx, db, pool)
+	require.NoError(t, err)
+
+	// Register a token refresh handler
+	handlerCalled := false
+	scheduler.RegisterTokenRefreshHandler(func(ctx context.Context, job *Job) error {
+		handlerCalled = true
+		return nil
+	})
+
+	// Start the scheduler
+	scheduler.Start()
+	defer scheduler.Stop()
+
+	// Wait for the scheduler to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Schedule a token refresh job
+	payload := TokenRefreshPayload{UserID: "user1"}
+	payloadBytes, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	job, err := scheduler.ScheduleJob("user1", "token_refresh", "*/5 * * * *", json.RawMessage(payloadBytes))
+	require.NoError(t, err)
+
+	// Set the job's next run time to now
+	job.NextRun = time.Now()
+	err = scheduler.store.UpdateJob(ctx, job)
+	require.NoError(t, err)
+	scheduler.signalCronWakeup()
+
+	// Wait for the job to be executed
+	time.Sleep(100 * time.Millisecond)
+	assert.True(t, handlerCalled)
 }

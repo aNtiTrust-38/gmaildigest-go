@@ -10,20 +10,6 @@ import (
 	"gmaildigest-go/internal/worker"
 )
 
-// JobTask wraps a Job and implements worker.Task
-type JobTask struct {
-	Job *Job
-	Exec func(*Job) error // allows test injection
-}
-
-func (jt *JobTask) Process() error {
-	if jt.Exec != nil {
-		return jt.Exec(jt.Job)
-	}
-	// Default: mark job as executed (stub)
-	return nil
-}
-
 // Scheduler manages job scheduling, deduplication, and persistence
 type Scheduler struct {
 	store      JobStore
@@ -34,6 +20,7 @@ type Scheduler struct {
 	wg         sync.WaitGroup
 	cronWakeup chan struct{}
 	pool       *worker.WorkerPool
+	registry   *JobHandlerRegistry
 }
 
 // NewScheduler creates a new Scheduler and loads jobs from the database
@@ -52,6 +39,7 @@ func NewScheduler(ctx context.Context, db *sql.DB, pool *worker.WorkerPool) (*Sc
 		cancel:     cancel,
 		cronWakeup: make(chan struct{}, 1),
 		pool:       pool,
+		registry:   NewJobHandlerRegistry(),
 	}
 	if err := s.loadJobsFromDB(); err != nil {
 		cancel()
@@ -78,16 +66,22 @@ func (s *Scheduler) ScheduleJob(userID, jobType, schedule string, payload interf
 	defer s.JobMu.Unlock()
 
 	// Convert payload to JSON
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
+	var payloadJSON json.RawMessage
+	if p, ok := payload.(json.RawMessage); ok {
+		payloadJSON = p
+	} else {
+		var err error
+		payloadJSON, err = json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Deduplication: check for existing job
 	for _, job := range s.Jobs {
 		if job.UserID == userID && job.Type == jobType && job.Schedule == schedule {
 			// Update payload and reset status
-			job.Payload = json.RawMessage(payloadJSON)
+			job.Payload = payloadJSON
 			job.Status = JobStatusPending
 			job.RetryCount = 0
 			job.NextRun = s.nextRunTime(schedule)
@@ -105,7 +99,7 @@ func (s *Scheduler) ScheduleJob(userID, jobType, schedule string, payload interf
 		UserID:   userID,
 		Type:     jobType,
 		Schedule: schedule,
-		Payload:  json.RawMessage(payloadJSON),
+		Payload:  payloadJSON,
 		Status:   JobStatusPending,
 		NextRun:  nextRun,
 	}
@@ -166,9 +160,10 @@ func (s *Scheduler) schedulingLoop() {
 func (s *Scheduler) dispatchDueJobs(now time.Time) {
 	s.JobMu.Lock()
 	defer s.JobMu.Unlock()
-	for _, job := range s.Jobs {
+	for id, job := range s.Jobs {
 		if job.Status == JobStatusPending && !job.NextRun.After(now) {
-			jt := &JobTask{Job: job}
+			jt := NewJobTask(s.ctx, job, s.registry)
+			jt.scheduler = s // Set the scheduler
 			ok := s.pool.Submit(jt)
 			if ok {
 				job.Status = JobStatusRunning
@@ -177,6 +172,7 @@ func (s *Scheduler) dispatchDueJobs(now time.Time) {
 					// Log error but continue with other jobs
 					continue
 				}
+				s.Jobs[id] = job // Update job in memory
 			} else {
 				// Backpressure: could not submit, reschedule or log
 			}
@@ -201,4 +197,52 @@ func (s *Scheduler) findNextJobTime() time.Time {
 func (s *Scheduler) Stop() {
 	s.cancel()
 	s.wg.Wait()
+}
+
+// RegisterTokenRefreshHandler registers the token refresh handler with the scheduler
+func (s *Scheduler) RegisterTokenRefreshHandler(handler JobHandler) {
+	s.registry.RegisterHandler("token_refresh", handler)
+}
+
+// RegisterHandler registers a handler function for a job type
+func (s *Scheduler) RegisterHandler(jobType string, handler JobHandler) {
+	s.registry.RegisterHandler(jobType, handler)
+}
+
+// ListJobs returns a list of jobs matching the given options
+func (s *Scheduler) ListJobs(ctx context.Context, opts *ListJobsOptions) ([]*Job, error) {
+	if opts == nil {
+		opts = &ListJobsOptions{}
+	}
+
+	filter := JobFilter{
+		UserID: opts.UserID,
+		Type:   opts.Type,
+		Status: opts.Status,
+	}
+
+	if !opts.Before.IsZero() {
+		filter.NextRun = opts.Before
+	}
+
+	jobs, err := s.store.ListJobs(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply additional filtering
+	var filtered []*Job
+	for _, job := range jobs {
+		if !opts.After.IsZero() && job.NextRun.Before(opts.After) {
+			continue
+		}
+		filtered = append(filtered, job)
+	}
+
+	// Apply limit
+	if opts.Limit > 0 && len(filtered) > opts.Limit {
+		filtered = filtered[:opts.Limit]
+	}
+
+	return filtered, nil
 } 

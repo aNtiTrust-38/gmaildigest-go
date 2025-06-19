@@ -68,6 +68,16 @@ type JobFilter struct {
 	Statuses []JobStatus `json:"statuses,omitempty"`
 }
 
+// ListJobsOptions represents the options for listing jobs
+type ListJobsOptions struct {
+	Type   string    `json:"type,omitempty"`
+	UserID string    `json:"user_id,omitempty"`
+	Status JobStatus `json:"status,omitempty"`
+	Before time.Time `json:"before,omitempty"`
+	After  time.Time `json:"after,omitempty"`
+	Limit  int       `json:"limit,omitempty"`
+}
+
 // SQLiteJobStore implements JobStore using SQLite
 type SQLiteJobStore struct {
 	db *sql.DB
@@ -260,33 +270,27 @@ func (s *SQLiteJobStore) DeleteJob(ctx context.Context, id string) error {
 	return nil
 }
 
-// Helper function to scan a job from a row
+// scanJob scans a row into a Job struct
 func (s *SQLiteJobStore) scanJob(rows *sql.Rows) (*Job, error) {
 	var job Job
-	var payload string
-	var lastRun sql.NullTime
-
+	var payloadStr string
 	err := rows.Scan(
 		&job.ID, &job.UserID, &job.Type, &job.Schedule,
-		&payload, &job.Status, &job.RetryCount, &job.LastError,
-		&job.NextRun, &lastRun, &job.CreatedAt, &job.UpdatedAt,
+		&payloadStr, &job.Status, &job.RetryCount, &job.LastError,
+		&job.NextRun, &job.LastRun, &job.CreatedAt, &job.UpdatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("scan row: %w", err)
+		return nil, fmt.Errorf("scan job: %w", err)
 	}
 
-	if err := json.Unmarshal([]byte(payload), &job.Payload); err != nil {
+	if err := json.Unmarshal([]byte(payloadStr), &job.Payload); err != nil {
 		return nil, fmt.Errorf("unmarshal payload: %w", err)
-	}
-
-	if lastRun.Valid {
-		job.LastRun = &lastRun.Time
 	}
 
 	return &job, nil
 }
 
-// Helper function to query a single job
+// queryJob executes a query that returns a single job
 func (s *SQLiteJobStore) queryJob(ctx context.Context, query string, args ...interface{}) (*Job, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

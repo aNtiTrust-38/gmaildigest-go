@@ -64,6 +64,7 @@ func (p *WorkerPool) Start() {
 // Stop signals all workers to exit and waits for them to finish
 func (p *WorkerPool) Stop() {
 	p.cancel()
+	close(p.tasks)
 	p.wg.Wait()
 }
 
@@ -89,7 +90,10 @@ func (p *WorkerPool) workerLoop() {
 		select {
 		case <-p.ctx.Done():
 			return
-		case task := <-p.tasks:
+		case task, ok := <-p.tasks:
+			if !ok {
+				return
+			}
 			p.processWithRetry(task, 0)
 		}
 	}
@@ -97,15 +101,21 @@ func (p *WorkerPool) workerLoop() {
 
 // processWithRetry processes a task, retrying up to maxRetries, then moves to dead letter
 func (p *WorkerPool) processWithRetry(task Task, attempt int) {
-	if err := task.Process(); err != nil {
-		if attempt+1 < p.maxRetries {
-			p.processWithRetry(task, attempt+1)
-		} else {
-			p.deadLetterMu.Lock()
-			p.deadLetter = append(p.deadLetter, task)
-			p.deadLetterMu.Unlock()
+	for attempt < p.maxRetries {
+		select {
+		case <-p.ctx.Done():
+			return
+		default:
+			if err := task.Process(); err != nil {
+				attempt++
+				continue
+			}
+			return
 		}
 	}
+	p.deadLetterMu.Lock()
+	p.deadLetter = append(p.deadLetter, task)
+	p.deadLetterMu.Unlock()
 }
 
 // DeadLetterCount returns the number of tasks in the dead letter queue
