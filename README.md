@@ -17,4 +17,10 @@ Gmail Digest Assistant v3.0 is a background-processing Go application designed t
   - Dead letter handling: jobs with `retry_count >= 10` and `status = 'dead'`
 - Migration logic is in `internal/scheduler/persistence.go`.
 
+### WorkerPool: Concurrency, Retry, and Dead Letter Logic
+- The WorkerPool manages concurrent processing of background jobs using a configurable number of worker goroutines.
+- Tasks are submitted to a buffered queue; if the queue is full, submission fails (backpressure).
+- Each task is retried up to 10 times on failure. If it still fails, it is moved to a dead letter queue for inspection.
+- See `internal/worker/pool.go` for implementation and `internal/worker/pool_test.go` for tests.
+
 These components provide the foundation for robust, concurrency-safe background processing and reliable job management in Gmail Digest Assistant v3.0.
