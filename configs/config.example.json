@@ -1,0 +1,20 @@
+{
+    "telegram": {
+        "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+        "default_digest_interval": "6h"
+    },
+    "auth": {
+        "credentials_path": "/path/to/google_credentials.json",
+        "token_db_path": "/path/to/tokens.db",
+        "token_encryption_key": "YOUR_32_CHAR_ENCRYPTION_KEY_HERE"
+    },
+    "gmail": {
+        "forward_email": "forward@example.com",
+        "batch_size": 50
+    },
+    "summary": {
+        "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
+        "openai_api_key": "YOUR_OPENAI_API_KEY",
+        "timeout": "30s"
+    }
+} 
