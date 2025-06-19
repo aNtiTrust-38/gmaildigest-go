@@ -69,11 +69,6 @@ func TestScheduler_DispatchesJobsToWorkerPool(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	// Migrate jobs table
-	err = scheduler.MigrateJobsTable(ctx, db)
-	if err != nil {
-		t.Fatalf("failed to migrate: %v", err)
-	}
 
 	// Setup WorkerPool and Scheduler
 	pool := worker.NewWorkerPool(2)
@@ -87,7 +82,8 @@ func TestScheduler_DispatchesJobsToWorkerPool(t *testing.T) {
 	}
 
 	// Schedule a job due now
-	job, err := sched.ScheduleJob("user1", "test", "* * * * *", "payload")
+	payload := map[string]string{"test": "value"}
+	job, err := sched.ScheduleJob("user1", "test", "* * * * *", payload)
 	if err != nil {
 		t.Fatalf("failed to schedule job: %v", err)
 	}

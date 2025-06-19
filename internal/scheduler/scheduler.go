@@ -3,27 +3,14 @@ package scheduler
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"sync"
 	"time"
-	"github.com/google/uuid"
+
 	"gmaildigest-go/internal/worker"
 )
 
-// Job represents a scheduled job (simplified for now)
-type Job struct {
-	ID         string
-	UserID     string
-	Type       string
-	Schedule   string
-	Payload    string
-	Status     string
-	RetryCount int
-	NextRun    time.Time
-	LastRun    time.Time
-}
-
 // JobTask wraps a Job and implements worker.Task
-//
 type JobTask struct {
 	Job *Job
 	Exec func(*Job) error // allows test injection
@@ -39,7 +26,7 @@ func (jt *JobTask) Process() error {
 
 // Scheduler manages job scheduling, deduplication, and persistence
 type Scheduler struct {
-	db         *sql.DB
+	store      JobStore
 	Jobs       map[string]*Job // jobID -> Job (exported for testing)
 	JobMu      sync.Mutex      // exported for testing
 	ctx        context.Context
@@ -52,8 +39,14 @@ type Scheduler struct {
 // NewScheduler creates a new Scheduler and loads jobs from the database
 func NewScheduler(ctx context.Context, db *sql.DB, pool *worker.WorkerPool) (*Scheduler, error) {
 	cctx, cancel := context.WithCancel(ctx)
+	store := NewSQLiteJobStore(db)
+	if err := store.Initialize(cctx); err != nil {
+		cancel()
+		return nil, err
+	}
+
 	s := &Scheduler{
-		db:         db,
+		store:      store,
 		Jobs:       make(map[string]*Job),
 		ctx:        cctx,
 		cancel:     cancel,
@@ -61,6 +54,7 @@ func NewScheduler(ctx context.Context, db *sql.DB, pool *worker.WorkerPool) (*Sc
 		pool:       pool,
 	}
 	if err := s.loadJobsFromDB(); err != nil {
+		cancel()
 		return nil, err
 	}
 	return s, nil
@@ -68,74 +62,61 @@ func NewScheduler(ctx context.Context, db *sql.DB, pool *worker.WorkerPool) (*Sc
 
 // loadJobsFromDB loads persisted jobs into memory
 func (s *Scheduler) loadJobsFromDB() error {
-	rows, err := s.db.QueryContext(s.ctx, `SELECT id, user_id, type, schedule, payload, status, retry_count, next_run, last_run FROM jobs`)
+	jobs, err := s.store.ListJobs(s.ctx, JobFilter{})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var j Job
-		var nextRun, lastRun sql.NullTime
-		if err := rows.Scan(&j.ID, &j.UserID, &j.Type, &j.Schedule, &j.Payload, &j.Status, &j.RetryCount, &nextRun, &lastRun); err != nil {
-			return err
-		}
-		if nextRun.Valid {
-			j.NextRun = nextRun.Time
-		}
-		if lastRun.Valid {
-			j.LastRun = lastRun.Time
-		}
-		s.Jobs[j.ID] = &j
+	for _, job := range jobs {
+		s.Jobs[job.ID] = job
 	}
 	return nil
 }
 
 // ScheduleJob schedules a new job or deduplicates if one exists for user/type/schedule
-func (s *Scheduler) ScheduleJob(userID, jobType, schedule, payload string) (*Job, error) {
+func (s *Scheduler) ScheduleJob(userID, jobType, schedule string, payload interface{}) (*Job, error) {
 	s.JobMu.Lock()
 	defer s.JobMu.Unlock()
+
+	// Convert payload to JSON
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
 	// Deduplication: check for existing job
 	for _, job := range s.Jobs {
 		if job.UserID == userID && job.Type == jobType && job.Schedule == schedule {
 			// Update payload and reset status
-			job.Payload = payload
-			job.Status = "scheduled"
+			job.Payload = json.RawMessage(payloadJSON)
+			job.Status = JobStatusPending
 			job.RetryCount = 0
 			job.NextRun = s.nextRunTime(schedule)
-			if err := s.persistJob(job); err != nil {
+			if err := s.store.UpdateJob(s.ctx, job); err != nil {
 				return nil, err
 			}
 			s.signalCronWakeup()
 			return job, nil
 		}
 	}
+
 	// New job
-	id := uuid.NewString()
 	nextRun := s.nextRunTime(schedule)
 	job := &Job{
-		ID:       id,
 		UserID:   userID,
 		Type:     jobType,
 		Schedule: schedule,
-		Payload:  payload,
-		Status:   "scheduled",
+		Payload:  json.RawMessage(payloadJSON),
+		Status:   JobStatusPending,
 		NextRun:  nextRun,
 	}
-	s.Jobs[id] = job
-	if err := s.persistJob(job); err != nil {
+
+	if err := s.store.CreateJob(s.ctx, job); err != nil {
 		return nil, err
 	}
+
+	s.Jobs[job.ID] = job
 	s.signalCronWakeup()
 	return job, nil
-}
-
-// persistJob inserts or updates a job in the database
-func (s *Scheduler) persistJob(job *Job) error {
-	_, err := s.db.ExecContext(s.ctx, `INSERT INTO jobs (id, user_id, type, schedule, payload, status, retry_count, next_run, last_run, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-		ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, status=excluded.status, retry_count=excluded.retry_count, next_run=excluded.next_run, last_run=excluded.last_run, updated_at=CURRENT_TIMESTAMP`,
-		job.ID, job.UserID, job.Type, job.Schedule, job.Payload, job.Status, job.RetryCount, job.NextRun, job.LastRun)
-	return err
 }
 
 // nextRunTime computes the next run time for a cron schedule
@@ -186,14 +167,16 @@ func (s *Scheduler) dispatchDueJobs(now time.Time) {
 	s.JobMu.Lock()
 	defer s.JobMu.Unlock()
 	for _, job := range s.Jobs {
-		if job.Status == "scheduled" && !job.NextRun.After(now) {
+		if job.Status == JobStatusPending && !job.NextRun.After(now) {
 			jt := &JobTask{Job: job}
 			ok := s.pool.Submit(jt)
 			if ok {
-				job.Status = "running"
-				job.LastRun = now
-				// Optionally: update job.NextRun for recurring jobs
-				_ = s.persistJob(job)
+				job.Status = JobStatusRunning
+				job.LastRun = &now
+				if err := s.store.UpdateJob(s.ctx, job); err != nil {
+					// Log error but continue with other jobs
+					continue
+				}
 			} else {
 				// Backpressure: could not submit, reschedule or log
 			}
@@ -207,7 +190,7 @@ func (s *Scheduler) findNextJobTime() time.Time {
 	defer s.JobMu.Unlock()
 	next := time.Now().Add(24 * time.Hour)
 	for _, job := range s.Jobs {
-		if job.Status == "scheduled" && job.NextRun.Before(next) {
+		if job.Status == JobStatusPending && job.NextRun.Before(next) {
 			next = job.NextRun
 		}
 	}

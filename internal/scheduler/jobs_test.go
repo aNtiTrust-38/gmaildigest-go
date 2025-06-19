@@ -1,9 +1,7 @@
-package scheduler_test
+package scheduler
 
 import (
 	"testing"
-	"github.com/stretchr/testify/assert"
-	"context"
 )
 
 // Test: Job retry policy
@@ -24,4 +22,9 @@ func TestJob_GenericPayloadEncoding(t *testing.T) {
 // Test: Job deduplication edge cases
 func TestJob_DeduplicationEdgeCases(t *testing.T) {
 	// TODO: Test deduplication logic with edge cases (e.g., rapid rescheduling, concurrent updates)
+}
+
+func TestJobsPlaceholder(t *testing.T) {
+	// TODO: Implement job tests
+	t.Skip("Job tests not implemented yet")
 }
