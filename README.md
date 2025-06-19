@@ -1,0 +1,1 @@
+Gmail Digest Assistant v3.0 is a background-processing Go application designed to fetch, summarize, and deliver Gmail digest emails via Telegram. It is a milestone-driven, TDD-based project with a focus on concurrency safety, OAuth integration, metrics and observability, and production readiness. See `instructions.md` for detailed roadmap.
