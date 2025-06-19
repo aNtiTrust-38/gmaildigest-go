@@ -20,3 +20,18 @@ func TestPersistence_LoadJobs(t *testing.T) {
 func TestPersistence_JobRecovery(t *testing.T) {
 	// TODO: Test that jobs are recovered and rescheduled after application restart
 }
+
+// Test: Persistence of deduplicated jobs
+func TestPersistence_DeduplicatedJobs(t *testing.T) {
+	// TODO: Test that deduplicated jobs are persisted and not duplicated in the database
+}
+
+// Test: Persistence of retry counters
+func TestPersistence_JobRetryCounter(t *testing.T) {
+	// TODO: Test that job retry counters are persisted and restored after restart
+}
+
+// Test: Persistence of generic payloads
+func TestPersistence_GenericPayloads(t *testing.T) {
+	// TODO: Test that generic job payloads are persisted and restored correctly
+}

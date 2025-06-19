@@ -40,3 +40,18 @@ func TestScheduler_ErrorHandling(t *testing.T) {
 func TestTokenRefreshService_BackgroundRefresh(t *testing.T) {
 	// TODO: Test that token refresh jobs run in the background and refresh tokens as needed
 }
+
+// Test: Job deduplication by type and user
+func TestScheduler_JobDeduplication(t *testing.T) {
+	// TODO: Test that scheduling a job with the same type and user deduplicates (updates/reschedules) the job
+}
+
+// Test: Generic payload support
+func TestScheduler_GenericPayloadSupport(t *testing.T) {
+	// TODO: Test that jobs can accept and persist generic (e.g., JSON-encoded) payloads
+}
+
+// Test: Retry and dead letter handling
+func TestScheduler_DeadLetterHandling(t *testing.T) {
+	// TODO: Test that jobs are retried up to 10 times and then moved to a dead letter queue/failure routine
+}
