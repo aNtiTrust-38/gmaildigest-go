@@ -1,3 +1,4 @@
+
 [project]
 name = "Gmail Digest Assistant v3.0"
 description = "Milestone-driven, TDD-based Go application for Gmail digest delivery via Telegram."
