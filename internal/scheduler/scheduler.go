@@ -130,6 +130,12 @@ func (s *Scheduler) signalCronWakeup() {
 	}
 }
 
+// ForceCheck manually triggers the scheduler to re-evaluate jobs.
+// This is primarily useful for testing.
+func (s *Scheduler) ForceCheck() {
+	s.signalCronWakeup()
+}
+
 // Start begins the scheduling loop (does not execute jobs yet)
 func (s *Scheduler) Start() {
 	s.wg.Add(1)

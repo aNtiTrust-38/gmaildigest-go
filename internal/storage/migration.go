@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sync"
 	"time"
@@ -43,7 +42,7 @@ var migrations = []Migration{
 
 			CREATE TABLE IF NOT EXISTS tokens (
 				user_id TEXT PRIMARY KEY REFERENCES users(gmail_user_id) ON DELETE CASCADE,
-				token BLOB NOT NULL,
+				encrypted_token BLOB NOT NULL,
 				nonce BLOB NOT NULL,
 				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

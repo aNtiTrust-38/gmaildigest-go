@@ -17,8 +17,8 @@ type TokenRefreshPayload struct {
 // TokenRefreshService handles automatic token refresh for users
 type TokenRefreshService struct {
 	scheduler *Scheduler
-	storage   Storage
-	config    *oauth2.Config
+	Storage   Storage
+	Config    *oauth2.Config
 	client    *http.Client
 }
 
@@ -36,8 +36,8 @@ func NewTokenRefreshService(scheduler *Scheduler, storage Storage, config *oauth
 	
 	service := &TokenRefreshService{
 		scheduler: scheduler,
-		storage:   storage,
-		config:    config,
+		Storage:   storage,
+		Config:    config,
 		client:    http.DefaultClient,
 	}
 
@@ -93,7 +93,7 @@ func (s *TokenRefreshService) HandleTokenRefresh(ctx context.Context, job *Job) 
 	}
 
 	// Get the current token
-	token, err := s.storage.GetToken(ctx, payload.UserID)
+	token, err := s.Storage.GetToken(ctx, payload.UserID)
 	if err != nil {
 		return fmt.Errorf("failed to get token: %w", err)
 	}
@@ -112,7 +112,7 @@ func (s *TokenRefreshService) HandleTokenRefresh(ctx context.Context, job *Job) 
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, s.client)
 
 	// Create a token source from the existing token
-	tokenSource := s.config.TokenSource(ctx, token)
+	tokenSource := s.Config.TokenSource(ctx, token)
 
 	// Get a new token
 	newToken, err := tokenSource.Token()
@@ -121,7 +121,7 @@ func (s *TokenRefreshService) HandleTokenRefresh(ctx context.Context, job *Job) 
 	}
 
 	// Store the new token
-	if err := s.storage.StoreToken(ctx, payload.UserID, newToken); err != nil {
+	if err := s.Storage.StoreToken(ctx, payload.UserID, newToken); err != nil {
 		return fmt.Errorf("failed to store refreshed token: %w", err)
 	}
 
