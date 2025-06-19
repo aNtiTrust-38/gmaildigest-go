@@ -23,4 +23,12 @@ Gmail Digest Assistant v3.0 is a background-processing Go application designed t
 - Each task is retried up to 10 times on failure. If it still fails, it is moved to a dead letter queue for inspection.
 - See `internal/worker/pool.go` for implementation and `internal/worker/pool_test.go` for tests.
 
+### Scheduler/WorkerPool Integration & Milestone Completion
+- The Scheduler dispatches due jobs to the WorkerPool for concurrent execution.
+- Integration is fully tested: jobs scheduled by the Scheduler are processed by the WorkerPool and their effects are verified.
+- All features for Milestone 7 (background scheduling, persistence, worker pool, retry, dead letter, monitoring, and integration) are complete and tested.
+- See `internal/scheduler/scheduler.go` and `internal/scheduler/scheduler_test.go` for integration logic and tests.
+
+Milestone 7 is complete. See `instructions.md` for the next milestone.
+
 These components provide the foundation for robust, concurrency-safe background processing and reliable job management in Gmail Digest Assistant v3.0.
