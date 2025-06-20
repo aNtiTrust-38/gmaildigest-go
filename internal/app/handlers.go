@@ -1,0 +1,39 @@
+package app
+
+import (
+	"net/http"
+)
+
+//
+// Authentication Handlers
+//
+
+// handleLogin initiates the OAuth2 flow by redirecting the user to the Google consent page.
+func (a *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// For now, we'll use a hardcoded user ID.
+	// This will be replaced with session management later.
+	userID := "user-123"
+
+	authURL, _, err := a.Auth.GetAuthURL(userID)
+	if err != nil {
+		http.Error(w, "Failed to generate auth URL", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, authURL, http.StatusSeeOther)
+}
+
+// handleAuthCallback handles the redirect from Google after user consent.
+// It exchanges the authorization code for a token and stores it.
+func (a *Application) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	// TODO: Implement logic to validate state, exchange code for token, and store token.
+	w.WriteHeader(http.StatusNotImplemented)
+	w.Write([]byte("Auth callback handler not implemented yet."))
+}
+
+// handleLogout clears the user's session and token data.
+func (a *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// TODO: Implement logic to clear session/token.
+	w.WriteHeader(http.StatusNotImplemented)
+	w.Write([]byte("Logout handler not implemented yet."))
+} 

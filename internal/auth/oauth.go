@@ -205,4 +205,11 @@ func (m *OAuthManager) HandleCallback(ctx context.Context, code, state, userID s
 	}
 
 	return nil
+}
+
+// SetRedirectURL sets a custom redirect URL for testing purposes.
+func (m *OAuthManager) SetRedirectURL(url string) {
+	if m.config != nil {
+		m.config.RedirectURL = url
+	}
 } 

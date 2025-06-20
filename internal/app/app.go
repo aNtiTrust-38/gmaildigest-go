@@ -24,6 +24,7 @@ type Application struct {
 	Logger        *log.Logger
 	Scheduler     *scheduler.Scheduler
 	DB            *sql.DB
+	Auth          *auth.OAuthManager
 	HttpServer    *http.Server
 	MetricsServer *http.Server
 	WorkerPool    *worker.WorkerPool
@@ -90,9 +91,15 @@ func New(cfg *config.Config) (*Application, error) {
 		DB:            db,
 		WorkerPool:    pool,
 		Scheduler:     sched,
+		Auth:          oauthManager,
 		HttpServer:    httpServer,
 		MetricsServer: metricsServer,
 	}
+
+	// Register HTTP handlers
+	httpMux.HandleFunc("/login", app.handleLogin)
+	httpMux.HandleFunc("/auth/callback", app.handleAuthCallback)
+	httpMux.HandleFunc("/logout", app.handleLogout)
 
 	return app, nil
 }
