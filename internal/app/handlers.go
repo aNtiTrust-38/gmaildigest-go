@@ -26,9 +26,26 @@ func (a *Application) handleLogin(w http.ResponseWriter, r *http.Request) {
 // handleAuthCallback handles the redirect from Google after user consent.
 // It exchanges the authorization code for a token and stores it.
 func (a *Application) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement logic to validate state, exchange code for token, and store token.
-	w.WriteHeader(http.StatusNotImplemented)
-	w.Write([]byte("Auth callback handler not implemented yet."))
+	// TODO: Replace hardcoded userID with real session management
+	userID := "user-123"
+
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+
+	if code == "" || state == "" {
+		http.Error(w, "Invalid request: missing code or state", http.StatusBadRequest)
+		return
+	}
+
+	err := a.Auth.HandleCallback(r.Context(), code, state, userID)
+	if err != nil {
+		a.Logger.Printf("Auth callback error: %v", err)
+		http.Error(w, "Authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	// On success, redirect to the home page.
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // handleLogout clears the user's session and token data.

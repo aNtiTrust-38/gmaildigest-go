@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"sync"
 )
@@ -48,14 +51,12 @@ func (s *InMemoryStateStore) DeleteState(userID string) {
 type InMemoryPKCEStore struct {
 	mu        sync.Mutex
 	verifiers map[string]string
-	generator PKCEStore
 }
 
 // NewInMemoryPKCEStore creates a new InMemoryPKCEStore.
 func NewInMemoryPKCEStore() *InMemoryPKCEStore {
 	return &InMemoryPKCEStore{
 		verifiers: make(map[string]string),
-		generator: NewPKCEGenerator(),
 	}
 }
 
@@ -81,15 +82,25 @@ func (s *InMemoryPKCEStore) GetVerifier(state string) (string, error) {
 
 // GenerateCodeVerifier creates a new code verifier.
 func (s *InMemoryPKCEStore) GenerateCodeVerifier(length int) (string, error) {
-	return s.generator.GenerateCodeVerifier(length)
+	if length < 43 || length > 128 {
+		return "", fmt.Errorf("code verifier length must be between 43 and 128 characters")
+	}
+	p := make([]byte, length)
+	if _, err := rand.Read(p); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(p), nil
 }
 
 // GenerateCodeChallenge creates a code challenge from a verifier.
 func (s *InMemoryPKCEStore) GenerateCodeChallenge(verifier string) (string, error) {
-	return s.generator.GenerateCodeChallenge(verifier)
+	h := sha256.New()
+	h.Write([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
 // ValidateChallenge validates a code challenge against a verifier.
 func (s *InMemoryPKCEStore) ValidateChallenge(challenge, verifier string) bool {
-	return s.generator.ValidateChallenge(challenge, verifier)
+	calculatedChallenge, _ := s.GenerateCodeChallenge(verifier)
+	return challenge == calculatedChallenge
 } 

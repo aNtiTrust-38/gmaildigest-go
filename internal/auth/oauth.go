@@ -195,7 +195,22 @@ func (m *OAuthManager) HandleCallback(ctx context.Context, code, state, userID s
 	}
 	defer m.stateStore.DeleteState(userID)
 
-	token, err := m.config.Exchange(ctx, code)
+	verifier, err := m.pkceStore.GetVerifier(state)
+	if err != nil {
+		return fmt.Errorf("failed to get pkce verifier: %w", err)
+	}
+
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("code_verifier", verifier),
+	}
+
+	var token *oauth2.Token
+	if m.tokenSource != nil {
+		token, err = m.tokenSource.Token()
+	} else {
+		token, err = m.config.Exchange(ctx, code, opts...)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to exchange code for token: %w", err)
 	}
