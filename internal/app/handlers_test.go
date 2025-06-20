@@ -76,8 +76,6 @@ func TestHandlers_Login(t *testing.T) {
 }
 
 func TestHandlers_AuthCallback(t *testing.T) {
-	t.Skip("Skipping callback test temporarily due to persistent, unidentified test environment issue.")
-
 	// Setup
 	mockStorage := &MockStorage{}
 	pkceStore := auth.NewInMemoryPKCEStore()
@@ -93,7 +91,10 @@ func TestHandlers_AuthCallback(t *testing.T) {
 
 	userID := "user-123"
 	state := "test-state"
+	verifier := "test-verifier"
+	// Store the necessary state and verifier for the callback to succeed
 	stateStore.StoreState(userID, state)
+	pkceStore.StoreVerifier(state, verifier)
 
 	app := &Application{
 		Auth:   oauthManager,
