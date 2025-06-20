@@ -20,12 +20,13 @@ import (
 
 // Application holds all the major components of the service.
 type Application struct {
-	Config     *config.Config
-	Logger     *log.Logger
-	Scheduler  *scheduler.Scheduler
-	DB         *sql.DB
-	HttpServer *http.Server
-	WorkerPool *worker.WorkerPool
+	Config        *config.Config
+	Logger        *log.Logger
+	Scheduler     *scheduler.Scheduler
+	DB            *sql.DB
+	HttpServer    *http.Server
+	MetricsServer *http.Server
+	WorkerPool    *worker.WorkerPool
 }
 
 // New creates and initializes a new Application instance.
@@ -33,7 +34,7 @@ func New(cfg *config.Config) (*Application, error) {
 	logger := log.New(os.Stdout, "gmaildigest: ", log.LstdFlags)
 
 	// Setup: Database
-	db, err := sql.Open("sqlite3", cfg.DBPath)
+	db, err := sql.Open("sqlite3", cfg.DB.FilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -44,7 +45,7 @@ func New(cfg *config.Config) (*Application, error) {
 	}
 
 	// Setup: WorkerPool
-	pool := worker.NewWorkerPool(cfg.Worker.PoolSize)
+	pool := worker.NewWorkerPool(cfg.Worker.NumWorkers)
 
 	// Setup: Scheduler
 	sched, err := scheduler.NewScheduler(context.Background(), db, pool)
@@ -68,20 +69,29 @@ func New(cfg *config.Config) (*Application, error) {
 	sched.RegisterHandler("token_refresh", tokenRefreshService.HandleTokenRefreshJob)
 
 	// Setup: HTTP Server for metrics
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsServer := &http.Server{
+		Addr:    fmt.Sprintf(":%d", cfg.Server.MetricsPort),
+		Handler: metricsMux,
+	}
+
+	// Setup: Main HTTP Server
+	httpMux := http.NewServeMux()
+	// TODO: Add main application handlers to httpMux
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler: mux,
+		Handler: httpMux,
 	}
 
 	app := &Application{
-		Config:     cfg,
-		Logger:     logger,
-		DB:         db,
-		WorkerPool: pool,
-		Scheduler:  sched,
-		HttpServer: httpServer,
+		Config:        cfg,
+		Logger:        logger,
+		DB:            db,
+		WorkerPool:    pool,
+		Scheduler:     sched,
+		HttpServer:    httpServer,
+		MetricsServer: metricsServer,
 	}
 
 	return app, nil
@@ -101,7 +111,15 @@ func (a *Application) Start(ctx context.Context) error {
 
 	// Start the metrics server
 	go func() {
-		a.Logger.Printf("Starting metrics server on %s", a.HttpServer.Addr)
+		a.Logger.Printf("Starting metrics server on %s", a.MetricsServer.Addr)
+		if err := a.MetricsServer.ListenAndServe(); err != http.ErrServerClosed {
+			a.Logger.Fatalf("Metrics server ListenAndServe: %v", err)
+		}
+	}()
+
+	// Start the main HTTP server
+	go func() {
+		a.Logger.Printf("Starting HTTP server on %s", a.HttpServer.Addr)
 		if err := a.HttpServer.ListenAndServe(); err != http.ErrServerClosed {
 			a.Logger.Fatalf("HTTP server ListenAndServe: %v", err)
 		}
@@ -114,11 +132,16 @@ func (a *Application) Start(ctx context.Context) error {
 func (a *Application) Stop(ctx context.Context) error {
 	a.Logger.Println("Stopping application services...")
 
-	// Shutdown HTTP server
+	// Shutdown servers
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
 	if err := a.HttpServer.Shutdown(shutdownCtx); err != nil {
 		a.Logger.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	if err := a.MetricsServer.Shutdown(shutdownCtx); err != nil {
+		a.Logger.Printf("Metrics server shutdown error: %v", err)
 	}
 
 	// Stop the scheduler

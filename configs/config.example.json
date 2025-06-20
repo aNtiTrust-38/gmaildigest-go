@@ -1,15 +1,14 @@
 {
     "telegram": {
         "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
-        "default_digest_interval": "6h"
+        "default_digest_interval": "24h"
     },
     "auth": {
-        "credentials_path": "/path/to/google_credentials.json",
-        "token_db_path": "/path/to/tokens.db",
-        "token_encryption_key": "YOUR_32_CHAR_ENCRYPTION_KEY_HERE"
+        "credentials_path": "path/to/your/credentials.json",
+        "token_encryption_key": "a_secure_random_key_that_is_32_bytes_long"
     },
     "gmail": {
-        "forward_email": "forward@example.com",
+        "forward_email": "",
         "batch_size": 50
     },
     "summary": {
@@ -17,11 +16,15 @@
         "openai_api_key": "YOUR_OPENAI_API_KEY",
         "timeout": "30s"
     },
-    "db_path": "./gmaildigest.db",
+    "db": {
+        "file_path": "gmaildigest.db",
+        "encryption_key": "a_very_secret_key_32_bytes_long"
+    },
     "worker": {
-        "pool_size": 5
+        "num_workers": 4
     },
     "server": {
-        "port": 8082
+        "port": 8080,
+        "metrics_port": 8081
     }
 } 

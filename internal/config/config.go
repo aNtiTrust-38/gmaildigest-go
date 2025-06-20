@@ -19,12 +19,11 @@ type Config struct {
 
 	Auth struct {
 		CredentialsPath    string `json:"credentials_path" validate:"required,file" env:"AUTH_CREDENTIALS_PATH"`
-		TokenDBPath        string `json:"token_db_path" validate:"required" env:"AUTH_TOKEN_DB_PATH"`
 		TokenEncryptionKey string `json:"token_encryption_key" validate:"required,min=32" env:"AUTH_TOKEN_ENCRYPTION_KEY"`
 	} `json:"auth"`
 
 	Gmail struct {
-		ForwardEmail string `json:"forward_email" validate:"email" env:"GMAIL_FORWARD_EMAIL"`
+		ForwardEmail string `json:"forward_email" validate:"omitempty,email" env:"GMAIL_FORWARD_EMAIL"`
 		BatchSize    int    `json:"batch_size" validate:"min=1,max=100" env:"GMAIL_BATCH_SIZE"`
 	} `json:"gmail"`
 
@@ -34,14 +33,18 @@ type Config struct {
 		Timeout         Duration `json:"timeout" validate:"required,min=5s" env:"SUMMARY_TIMEOUT"`
 	} `json:"summary"`
 
-	DBPath string `json:"db_path" validate:"required"`
+	DB struct {
+		FilePath      string `json:"file_path" validate:"required"`
+		EncryptionKey string `json:"encryption_key" validate:"required"`
+	} `json:"db"`
 
 	Worker struct {
-		PoolSize int `json:"pool_size" validate:"min=1"`
+		NumWorkers int `json:"num_workers" validate:"min=1"`
 	} `json:"worker"`
 
 	Server struct {
-		Port int `json:"port" validate:"min=1024,max=65535"`
+		Port        int `json:"port" validate:"min=1024,max=65535"`
+		MetricsPort int `json:"metrics_port" validate:"min=1024,max=65535"`
 	} `json:"server"`
 }
 
@@ -142,9 +145,6 @@ func (c *Config) applyEnvironmentOverrides() error {
 	if v := os.Getenv("AUTH_CREDENTIALS_PATH"); v != "" {
 		c.Auth.CredentialsPath = v
 	}
-	if v := os.Getenv("AUTH_TOKEN_DB_PATH"); v != "" {
-		c.Auth.TokenDBPath = v
-	}
 	if v := os.Getenv("AUTH_TOKEN_ENCRYPTION_KEY"); v != "" {
 		c.Auth.TokenEncryptionKey = v
 	}
@@ -177,16 +177,19 @@ func (c *Config) applyEnvironmentOverrides() error {
 	}
 
 	// DBPath overrides
-	if v := os.Getenv("DB_PATH"); v != "" {
-		c.DBPath = v
+	if v := os.Getenv("DB_FILE_PATH"); v != "" {
+		c.DB.FilePath = v
+	}
+	if v := os.Getenv("DB_ENCRYPTION_KEY"); v != "" {
+		c.DB.EncryptionKey = v
 	}
 
 	// Worker overrides
-	if v := os.Getenv("WORKER_POOL_SIZE"); v != "" {
+	if v := os.Getenv("WORKER_NUM_WORKERS"); v != "" {
 		var err error
-		c.Worker.PoolSize, err = parseInt(v)
+		c.Worker.NumWorkers, err = parseInt(v)
 		if err != nil {
-			return fmt.Errorf("parsing WORKER_POOL_SIZE: %w", err)
+			return fmt.Errorf("parsing WORKER_NUM_WORKERS: %w", err)
 		}
 	}
 
@@ -196,6 +199,13 @@ func (c *Config) applyEnvironmentOverrides() error {
 		c.Server.Port, err = parseInt(v)
 		if err != nil {
 			return fmt.Errorf("parsing SERVER_PORT: %w", err)
+		}
+	}
+	if v := os.Getenv("SERVER_METRICS_PORT"); v != "" {
+		var err error
+		c.Server.MetricsPort, err = parseInt(v)
+		if err != nil {
+			return fmt.Errorf("parsing SERVER_METRICS_PORT: %w", err)
 		}
 	}
 
