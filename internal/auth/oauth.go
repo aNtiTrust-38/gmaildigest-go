@@ -21,8 +21,8 @@ type OAuthManager struct {
 
 // Storage interface for token persistence
 type Storage interface {
-	StoreToken(ctx context.Context, userID string, token []byte, nonce []byte) error
-	GetToken(ctx context.Context, userID string) ([]byte, []byte, error)
+	StoreToken(ctx context.Context, userID string, token *oauth2.Token) error
+	GetToken(ctx context.Context, userID string) (*oauth2.Token, error)
 }
 
 // StateStore manages OAuth state parameter
@@ -155,18 +155,7 @@ func (m *OAuthManager) RefreshToken(ctx context.Context, userID string) error {
 		newToken.RefreshToken = token.RefreshToken
 	}
 
-	tokenBytes, err := json.Marshal(newToken)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token: %w", err)
-	}
-
-	// Get the existing nonce
-	_, nonce, err := m.storage.GetToken(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get nonce: %w", err)
-	}
-
-	if err := m.storage.StoreToken(ctx, userID, tokenBytes, nonce); err != nil {
+	if err := m.storage.StoreToken(ctx, userID, newToken); err != nil {
 		return fmt.Errorf("failed to store refreshed token: %w", err)
 	}
 
@@ -175,17 +164,7 @@ func (m *OAuthManager) RefreshToken(ctx context.Context, userID string) error {
 
 // getToken retrieves and unmarshals the OAuth token for a user
 func (m *OAuthManager) getToken(ctx context.Context, userID string) (*oauth2.Token, error) {
-	tokenBytes, _, err := m.storage.GetToken(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get token from storage: %w", err)
-	}
-
-	var token oauth2.Token
-	if err := json.Unmarshal(tokenBytes, &token); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
-	}
-
-	return &token, nil
+	return m.storage.GetToken(ctx, userID)
 }
 
 // generateRandomState generates a random state parameter for OAuth flow
@@ -221,13 +200,7 @@ func (m *OAuthManager) HandleCallback(ctx context.Context, code, state, userID s
 		return fmt.Errorf("failed to exchange code for token: %w", err)
 	}
 
-	tokenBytes, err := json.Marshal(token)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token: %w", err)
-	}
-
-	nonce := []byte(generateRandomState()) // Using state generator for nonce temporarily
-	if err := m.storage.StoreToken(ctx, userID, tokenBytes, nonce); err != nil {
+	if err := m.storage.StoreToken(ctx, userID, token); err != nil {
 		return fmt.Errorf("failed to store token: %w", err)
 	}
 

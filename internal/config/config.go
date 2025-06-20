@@ -33,6 +33,16 @@ type Config struct {
 		OpenAIAPIKey    string   `json:"openai_api_key" env:"SUMMARY_OPENAI_API_KEY"`
 		Timeout         Duration `json:"timeout" validate:"required,min=5s" env:"SUMMARY_TIMEOUT"`
 	} `json:"summary"`
+
+	DBPath string `json:"db_path" validate:"required"`
+
+	Worker struct {
+		PoolSize int `json:"pool_size" validate:"min=1"`
+	} `json:"worker"`
+
+	Server struct {
+		Port int `json:"port" validate:"min=1024,max=65535"`
+	} `json:"server"`
 }
 
 // Duration is a wrapper around time.Duration that implements JSON marshaling/unmarshaling
@@ -164,6 +174,29 @@ func (c *Config) applyEnvironmentOverrides() error {
 			return fmt.Errorf("parsing SUMMARY_TIMEOUT: %w", err)
 		}
 		c.Summary.Timeout = Duration{d}
+	}
+
+	// DBPath overrides
+	if v := os.Getenv("DB_PATH"); v != "" {
+		c.DBPath = v
+	}
+
+	// Worker overrides
+	if v := os.Getenv("WORKER_POOL_SIZE"); v != "" {
+		var err error
+		c.Worker.PoolSize, err = parseInt(v)
+		if err != nil {
+			return fmt.Errorf("parsing WORKER_POOL_SIZE: %w", err)
+		}
+	}
+
+	// Server overrides
+	if v := os.Getenv("SERVER_PORT"); v != "" {
+		var err error
+		c.Server.Port, err = parseInt(v)
+		if err != nil {
+			return fmt.Errorf("parsing SERVER_PORT: %w", err)
+		}
 	}
 
 	return nil

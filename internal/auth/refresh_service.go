@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gmaildigest-go/internal/scheduler"
 	"time"
 )
 
@@ -62,14 +63,14 @@ func (s *TokenRefreshService) CreateRefreshJob(userID string) ([]byte, error) {
 	return json.Marshal(job)
 }
 
-// HandleRefreshJob handles a token refresh job
-func (s *TokenRefreshService) HandleRefreshJob(ctx context.Context, payload []byte) error {
-	var job TokenRefreshJob
-	if err := json.Unmarshal(payload, &job); err != nil {
+// HandleTokenRefreshJob handles a token refresh job and satisfies the scheduler.JobHandler interface.
+func (s *TokenRefreshService) HandleTokenRefreshJob(ctx context.Context, job *scheduler.Job) error {
+	var jobPayload TokenRefreshJob
+	if err := json.Unmarshal(job.Payload, &jobPayload); err != nil {
 		return fmt.Errorf("failed to unmarshal job payload: %w", err)
 	}
 
-	return s.refreshUserToken(ctx, job.UserID)
+	return s.refreshUserToken(ctx, jobPayload.UserID)
 }
 
 // GetRefreshSchedule returns the cron schedule for token refresh

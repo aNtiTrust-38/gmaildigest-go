@@ -16,5 +16,12 @@
         "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
         "openai_api_key": "YOUR_OPENAI_API_KEY",
         "timeout": "30s"
+    },
+    "db_path": "./gmaildigest.db",
+    "worker": {
+        "pool_size": 5
+    },
+    "server": {
+        "port": 8082
     }
 } 

@@ -12,19 +12,16 @@ import (
 	"io"
 )
 
-// This key should be 32 bytes and loaded securely from config.
-// Using a placeholder for now.
-var encryptionKey = []byte("12345678901234567890123456789012")
-
 // TokenStore handles the logic for storing and retrieving OAuth2 tokens,
 // including encryption and decryption.
 type TokenStore struct {
-	db Storage
+	db          Storage
+	encryptionKey []byte
 }
 
 // NewTokenStore creates a new TokenStore.
-func NewTokenStore(db Storage) *TokenStore {
-	return &TokenStore{db: db}
+func NewTokenStore(db Storage, key []byte) *TokenStore {
+	return &TokenStore{db: db, encryptionKey: key}
 }
 
 // GetToken retrieves a decrypted oauth2.Token for a user.
@@ -34,7 +31,7 @@ func (ts *TokenStore) GetToken(ctx context.Context, userID string) (*oauth2.Toke
 		return nil, fmt.Errorf("failed to get encrypted token from db: %w", err)
 	}
 
-	block, err := aes.NewCipher(encryptionKey)
+	block, err := aes.NewCipher(ts.encryptionKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cipher: %w", err)
 	}
@@ -68,7 +65,7 @@ func (ts *TokenStore) StoreToken(ctx context.Context, userID string, token *oaut
 		return fmt.Errorf("failed to marshal token: %w", err)
 	}
 
-	block, err := aes.NewCipher(encryptionKey)
+	block, err := aes.NewCipher(ts.encryptionKey)
 	if err != nil {
 		return fmt.Errorf("failed to create cipher: %w", err)
 	}
