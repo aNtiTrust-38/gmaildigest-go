@@ -1,2 +1,8 @@
 cursor_instructions.md
 .DS_Store
+
+# Local database files
+*.db
+
+# Go module cache
+/pkg/
