@@ -51,15 +51,15 @@ func main() {
 	// For now, the scheduler is running but has no job handlers registered
 	// other than the ones it might register itself (like token_refresh).
 
-	// Setup: HTTP Server for metrics
+	// Setup and start the metrics server
+	logger.Println("Starting metrics server on :8082")
 	http.Handle("/metrics", promhttp.Handler())
 	httpServer := &http.Server{
-		Addr:    ":8080",
+		Addr:    ":8082",
 		Handler: nil, // Use DefaultServeMux
 	}
 
 	go func() {
-		logger.Println("Starting metrics server on :8080")
 		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 			logger.Fatalf("HTTP server ListenAndServe: %v", err)
 		}
