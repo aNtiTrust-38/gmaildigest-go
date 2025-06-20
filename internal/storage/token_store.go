@@ -83,4 +83,9 @@ func (ts *TokenStore) StoreToken(ctx context.Context, userID string, token *oaut
 	encryptedToken := aesgcm.Seal(nil, nonce, tokenBytes, nil)
 
 	return ts.db.StoreToken(ctx, userID, encryptedToken, nonce)
+}
+
+// DeleteToken removes a token for a user.
+func (ts *TokenStore) DeleteToken(ctx context.Context, userID string) error {
+	return ts.db.DeleteToken(ctx, userID)
 } 

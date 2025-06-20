@@ -50,7 +50,16 @@ func (a *Application) handleAuthCallback(w http.ResponseWriter, r *http.Request)
 
 // handleLogout clears the user's session and token data.
 func (a *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement logic to clear session/token.
-	w.WriteHeader(http.StatusNotImplemented)
-	w.Write([]byte("Logout handler not implemented yet."))
+	// TODO: Replace hardcoded userID with real session management
+	userID := "user-123"
+
+	err := a.Auth.RevokeToken(r.Context(), userID)
+	if err != nil {
+		a.Logger.Printf("Logout error: %v", err)
+		http.Error(w, "Failed to logout", http.StatusInternalServerError)
+		return
+	}
+
+	// On success, redirect to the home page.
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 } 

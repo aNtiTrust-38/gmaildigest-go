@@ -19,7 +19,8 @@ import (
 
 // MockStorage is a mock implementation of the auth.Storage interface for testing.
 type MockStorage struct {
-	token *oauth2.Token
+	token     *oauth2.Token
+	isDeleted bool
 }
 
 func (m *MockStorage) StoreToken(ctx context.Context, userID string, token *oauth2.Token) error {
@@ -28,11 +29,20 @@ func (m *MockStorage) StoreToken(ctx context.Context, userID string, token *oaut
 }
 
 func (m *MockStorage) GetToken(ctx context.Context, userID string) (*oauth2.Token, error) {
+	if m.isDeleted {
+		return nil, nil
+	}
 	return m.token, nil
 }
 
 func (m *MockStorage) TokenWasStored() bool {
-	return m.token != nil
+	return m.token != nil && !m.isDeleted
+}
+
+func (m *MockStorage) DeleteToken(ctx context.Context, userID string) error {
+	m.isDeleted = true
+	m.token = nil
+	return nil
 }
 
 // MockTokenSource is a mock implementation of oauth2.TokenSource for testing.
@@ -118,4 +128,35 @@ func TestHandlers_AuthCallback(t *testing.T) {
 
 	// Assert: Check that a token was stored
 	assert.True(t, mockStorage.TokenWasStored(), "token was not stored")
+}
+
+func TestHandlers_Logout(t *testing.T) {
+	// Setup
+	mockStorage := &MockStorage{}
+	// Pre-seed the storage with a token to be deleted
+	mockStorage.StoreToken(context.Background(), "user-123", &oauth2.Token{})
+
+	// The OAuthManager needs a concrete storage implementation that supports DeleteToken
+	oauthManager := auth.NewOAuthManager(mockStorage, nil, nil)
+
+	app := &Application{
+		Auth:   oauthManager,
+		Logger: log.New(io.Discard, "", 0),
+	}
+
+	req, err := http.NewRequest("GET", "/logout", nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(app.handleLogout)
+	handler.ServeHTTP(rr, req)
+
+	// Assert: Check for redirect to home page
+	assert.Equal(t, http.StatusSeeOther, rr.Code, "handler returned wrong status code")
+	location, err := rr.Result().Location()
+	require.NoError(t, err)
+	assert.Equal(t, "/", location.Path, "handler redirected to wrong path")
+
+	// Assert: Check that the token was deleted
+	assert.False(t, mockStorage.TokenWasStored(), "token was not deleted")
 } 

@@ -81,19 +81,16 @@ func (s *SQLiteStorage) StoreToken(ctx context.Context, userID string, token, no
 		return err
 	}
 
-	query := `
-		INSERT INTO tokens (user_id, encrypted_token, nonce, updated_at)
-		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(user_id) DO UPDATE SET
-			encrypted_token = excluded.encrypted_token,
-			nonce = excluded.nonce,
-			updated_at = CURRENT_TIMESTAMP
-	`
+	query := `INSERT OR REPLACE INTO tokens (user_id, encrypted_token, nonce) VALUES (?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, query, userID, token, nonce)
-	if err != nil {
-		return fmt.Errorf("failed to store token: %w", err)
-	}
-	return nil
+	return err
+}
+
+// DeleteToken removes a token from the database.
+func (s *SQLiteStorage) DeleteToken(ctx context.Context, userID string) error {
+	query := `DELETE FROM tokens WHERE user_id = ?`
+	_, err := s.db.ExecContext(ctx, query, userID)
+	return err
 }
 
 // GetToken retrieves an encrypted token and its nonce

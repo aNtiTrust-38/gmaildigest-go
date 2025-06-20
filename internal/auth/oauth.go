@@ -23,6 +23,7 @@ type OAuthManager struct {
 type Storage interface {
 	StoreToken(ctx context.Context, userID string, token *oauth2.Token) error
 	GetToken(ctx context.Context, userID string) (*oauth2.Token, error)
+	DeleteToken(ctx context.Context, userID string) error
 }
 
 // StateStore manages OAuth state parameter
@@ -220,6 +221,11 @@ func (m *OAuthManager) HandleCallback(ctx context.Context, code, state, userID s
 	}
 
 	return nil
+}
+
+// RevokeToken deletes a user's token from storage.
+func (m *OAuthManager) RevokeToken(ctx context.Context, userID string) error {
+	return m.storage.DeleteToken(ctx, userID)
 }
 
 // SetRedirectURL sets a custom redirect URL for testing purposes.
