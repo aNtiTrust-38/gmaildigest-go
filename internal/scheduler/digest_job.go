@@ -62,13 +62,17 @@ func (j *DigestJob) Run(userID string) error {
 		return fmt.Errorf("failed to create gmail service for user %s: %w", userID, err)
 	}
 
-	// 4. Fetch unread email subjects
-	subjects, err := gmailService.FetchUnreadEmailSubjects(ctx)
+	// 4. Fetch unread emails
+	emails, err := gmailService.FetchUnreadEmails(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to fetch emails for user %s: %w", userID, err)
 	}
 
 	// 5. Create summary
+	var subjects []string
+	for _, email := range emails {
+		subjects = append(subjects, email.Subject)
+	}
 	digest, err := j.summaryService.Summarize(subjects)
 	if err != nil {
 		return fmt.Errorf("failed to summarize emails for user %s: %w", userID, err)
