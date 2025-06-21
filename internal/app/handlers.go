@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -88,4 +89,21 @@ func (a *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect to the login page.
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+//
+// Application Handlers
+//
+
+// handleDashboard is a protected handler that displays a welcome message
+// to the authenticated user.
+func (a *Application) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	userID, ok := getUserIDFromContext(r)
+	if !ok {
+		// This should not happen if the middleware is applied correctly.
+		http.Error(w, "Could not identify user", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "Welcome, %s!", userID)
 } 

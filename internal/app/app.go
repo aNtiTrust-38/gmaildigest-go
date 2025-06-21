@@ -107,6 +107,10 @@ func New(cfg *config.Config) (*Application, error) {
 	httpMux.HandleFunc("/auth/callback", app.handleAuthCallback)
 	httpMux.HandleFunc("/logout", app.handleLogout)
 
+	// Protected routes
+	httpMux.Handle("/dashboard", app.requireAuth(http.HandlerFunc(app.handleDashboard)))
+	httpMux.Handle("/", app.requireAuth(http.RedirectHandler("/dashboard", http.StatusTemporaryRedirect)))
+
 	return app, nil
 }
 
