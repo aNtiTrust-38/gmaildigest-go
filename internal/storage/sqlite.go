@@ -262,4 +262,27 @@ func (s *SQLiteStorage) UpdateUserTelegramDetails(ctx context.Context, userID st
 	}
 
 	return nil
+}
+
+func (s *SQLiteStorage) GetUserByID(ctx context.Context, id string) (*User, error) {
+	query := `SELECT id, email, telegram_user_id, telegram_chat_id, created_at, updated_at FROM users WHERE id = ?`
+	row := s.db.QueryRowContext(ctx, query, id)
+
+	var u User
+	err := row.Scan(
+		&u.ID,
+		&u.Email,
+		&u.TelegramUserID,
+		&u.TelegramChatID,
+		&u.CreatedAt,
+		&u.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to scan user: %w", err)
+	}
+
+	return &u, nil
 } 

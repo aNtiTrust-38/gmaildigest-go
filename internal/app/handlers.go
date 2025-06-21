@@ -139,4 +139,22 @@ func (a *Application) handleTelegramConnect(w http.ResponseWriter, r *http.Reque
 	// Respond with a simple success message
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Telegram account successfully connected! You can now close this window."))
+}
+
+func (a *Application) handleDigestNow(w http.ResponseWriter, r *http.Request) {
+	userID := a.getUserIDFromContext(r)
+	if userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	go func() {
+		err := a.digestJob.Run(userID)
+		if err != nil {
+			a.logger.Printf("Error running digest job for user %s: %v", userID, err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	w.Write([]byte("Digest creation initiated. You will receive a message on Telegram shortly."))
 } 

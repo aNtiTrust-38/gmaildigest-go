@@ -15,6 +15,7 @@ import (
 	"gmaildigest-go/internal/storage"
 	"gmaildigest-go/internal/telegram"
 	"gmaildigest-go/internal/worker"
+	"gmaildigest-go/internal/summary"
 
 	"github.com/go-co-op/gocron/v2"
 )
@@ -27,9 +28,12 @@ type Application struct {
 	authService     *auth.AuthService
 	sessionStore    session.Store
 	storage         storage.Storage
+	tokenStore      *storage.TokenStore
 	scheduler       gocron.Scheduler
 	workerPool      *worker.Pool
 	telegramService *telegram.Service
+	summaryService  *summary.Service
+	digestJob       *scheduler.DigestJob
 }
 
 // New creates a new Application.
@@ -44,6 +48,8 @@ func New(cfg *config.Config) (*Application, error) {
 	if err := db.Migrate(); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
+
+	tokenStore := storage.NewTokenStore(db, []byte(cfg.EncryptionKey))
 
 	authService, err := auth.New(
 		cfg.Auth.ClientID,
@@ -62,14 +68,20 @@ func New(cfg *config.Config) (*Application, error) {
 		return nil, fmt.Errorf("failed to create telegram service: %w", err)
 	}
 
+	summaryService := summary.NewService()
+	digestJob := scheduler.NewDigestJob(logger, db, tokenStore, summaryService, telegramService)
+
 	app := &Application{
 		logger:          logger,
 		config:          cfg,
 		authService:     authService,
 		sessionStore:    sessionStore,
 		storage:         db,
+		tokenStore:      tokenStore,
 		workerPool:      workerPool,
 		telegramService: telegramService,
+		summaryService:  summaryService,
+		digestJob:       digestJob,
 	}
 
 	app.server = &http.Server{
@@ -116,6 +128,7 @@ func (a *Application) routes() http.Handler {
 	mux.Handle("GET /", a.requireAuth(http.HandlerFunc(a.handleDashboard)))
 	mux.Handle("GET /dashboard", a.requireAuth(http.HandlerFunc(a.handleDashboard)))
 	mux.Handle("GET /telegram/connect", a.requireAuth(http.HandlerFunc(a.handleTelegramConnect)))
+	mux.Handle("GET /digest/now", a.requireAuth(http.HandlerFunc(a.handleDigestNow)))
 
 	return mux
 } 
