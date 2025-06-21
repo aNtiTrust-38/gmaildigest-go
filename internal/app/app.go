@@ -68,7 +68,7 @@ func New(cfg *config.Config) (*Application, error) {
 		return nil, fmt.Errorf("failed to create telegram service: %w", err)
 	}
 
-	summaryService := summary.NewService()
+	summaryService := summary.NewService(cfg.OpenAI.APIKey)
 	digestJob := scheduler.NewDigestJob(logger, db, tokenStore, summaryService, telegramService)
 
 	app := &Application{

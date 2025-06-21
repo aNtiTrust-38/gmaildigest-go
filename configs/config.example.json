@@ -13,6 +13,9 @@
     "telegram": {
         "bot_token": "your-telegram-bot-token"
     },
+    "openai": {
+        "api_key": "your-openai-api-key"
+    },
     "scheduler": {
         "default_interval": "1h"
     }

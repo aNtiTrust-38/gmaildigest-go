@@ -69,11 +69,7 @@ func (j *DigestJob) Run(userID string) error {
 	}
 
 	// 5. Create summary
-	var subjects []string
-	for _, email := range emails {
-		subjects = append(subjects, email.Subject)
-	}
-	digest, err := j.summaryService.Summarize(subjects)
+	digest, err := j.summaryService.Summarize(ctx, emails)
 	if err != nil {
 		return fmt.Errorf("failed to summarize emails for user %s: %w", userID, err)
 	}

@@ -30,6 +30,10 @@ type Config struct {
 		BotToken string `json:"bot_token" validate:"required"`
 	} `json:"telegram"`
 
+	OpenAI struct {
+		APIKey string `json:"api_key" validate:"required"`
+	} `json:"openai"`
+
 	Scheduler struct {
 		DefaultInterval Duration `json:"default_interval" validate:"min=1m"`
 	} `json:"scheduler"`
@@ -145,6 +149,10 @@ func (c *Config) applyEnvOverrides() error {
 			return fmt.Errorf("parsing SCHEDULER_DEFAULT_INTERVAL: %w", err)
 		}
 		c.Scheduler.DefaultInterval = Duration{d}
+	}
+
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		c.OpenAI.APIKey = v
 	}
 
 	return nil

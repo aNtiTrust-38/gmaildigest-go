@@ -1,33 +1,61 @@
 package summary
 
-import "strings"
+import (
+	"context"
+	"fmt"
+	"gmaildigest-go/pkg/models"
+	"strings"
+
+	"github.com/sashabaranov/go-openai"
+)
 
 // Service provides methods for summarizing text.
-type Service struct{}
-
-// NewService creates a new Summary Service.
-func NewService() *Service {
-	return &Service{}
+type Service struct {
+	client *openai.Client
 }
 
-// Summarize creates a simple summary of a list of texts.
-// This is a placeholder and does not use an AI model.
-func (s *Service) Summarize(texts []string) (string, error) {
-	if len(texts) == 0 {
+// NewService creates a new Summary Service.
+func NewService(apiKey string) *Service {
+	client := openai.NewClient(apiKey)
+	return &Service{client: client}
+}
+
+// Summarize creates a summary of a list of emails using the OpenAI API.
+func (s *Service) Summarize(ctx context.Context, emails []models.Email) (string, error) {
+	if len(emails) == 0 {
 		return "No new emails to summarize.", nil
 	}
 
-	var summary strings.Builder
-	summary.WriteString("Here is your email digest:\n\n")
-
-	for i, text := range texts {
-		if i >= 5 { // Limit to 5 emails for the summary
-			break
-		}
-		summary.WriteString("- ")
-		summary.WriteString(text)
-		summary.WriteString("\n")
+	// Prepare the content for the prompt
+	var contentBuilder strings.Builder
+	contentBuilder.WriteString("Please provide a concise summary of the following emails:\n\n")
+	for _, email := range emails {
+		contentBuilder.WriteString(fmt.Sprintf("From: %s\n", email.From))
+		contentBuilder.WriteString(fmt.Sprintf("Subject: %s\n", email.Subject))
+		contentBuilder.WriteString(fmt.Sprintf("Body: %s\n\n", email.Body))
 	}
 
-	return summary.String(), nil
+	// Call the OpenAI API
+	resp, err := s.client.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT4o,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: contentBuilder.String(),
+				},
+			},
+		},
+	)
+
+	if err != nil {
+		return "", fmt.Errorf("failed to create chat completion: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no summary returned from OpenAI")
+	}
+
+	return resp.Choices[0].Message.Content, nil
 } 
