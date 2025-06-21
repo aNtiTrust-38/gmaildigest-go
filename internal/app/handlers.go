@@ -106,4 +106,17 @@ func (a *Application) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Welcome, %s!", userID)
+}
+
+func (a *Application) handleTelegramConnect(w http.ResponseWriter, r *http.Request) {
+	// Placeholder for now. This will connect the logged-in user
+	// to the telegram user ID from the token.
+	token := r.URL.Query().Get("token")
+	userID := a.getUserIDFromContext(r)
+
+	a.logger.Printf("User %s is attempting to connect telegram account with token %s", userID, token)
+
+	// Respond with a simple success message
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Telegram account successfully connected! You can now close this window."))
 } 

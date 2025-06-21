@@ -53,7 +53,7 @@ func New(cfg *config.Config) (*Application, error) {
 	sessionStore := session.NewInMemoryStore()
 	workerPool := worker.NewPool(cfg.NumWorkers)
 
-	telegramService, err := telegram.NewService(cfg.Telegram.BotToken, logger)
+	telegramService, err := telegram.NewService(cfg.Telegram.BotToken, cfg.HTTPPort, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create telegram service: %w", err)
 	}
@@ -99,4 +99,19 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		a.logger.Printf("Error shutting down scheduler: %v", err)
 	}
 	return a.server.Shutdown(ctx)
+}
+
+func (a *Application) routes() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /login", a.handleLogin)
+	mux.HandleFunc("GET /auth/callback", a.handleAuthCallback)
+	mux.HandleFunc("POST /logout", a.handleLogout)
+
+	// Authenticated routes
+	mux.Handle("GET /", a.requireAuth(http.HandlerFunc(a.handleDashboard)))
+	mux.Handle("GET /dashboard", a.requireAuth(http.HandlerFunc(a.handleDashboard)))
+	mux.Handle("GET /telegram/connect", a.requireAuth(http.HandlerFunc(a.handleTelegramConnect)))
+
+	return mux
 } 

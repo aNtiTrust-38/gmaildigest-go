@@ -2,17 +2,19 @@ package telegram
 
 import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"fmt"
 	"log"
 )
 
 // Service provides methods for interacting with the Telegram Bot API.
 type Service struct {
-	logger *log.Logger
-	bot    *tgbotapi.BotAPI
+	logger   *log.Logger
+	bot      *tgbotapi.BotAPI
+	httpPort int
 }
 
 // NewService creates a new Telegram Service.
-func NewService(botToken string, logger *log.Logger) (*Service, error) {
+func NewService(botToken string, httpPort int, logger *log.Logger) (*Service, error) {
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		return nil, err
@@ -22,8 +24,9 @@ func NewService(botToken string, logger *log.Logger) (*Service, error) {
 	logger.Printf("Authorized on account %s", bot.Self.UserName)
 
 	return &Service{
-		logger: logger,
-		bot:    bot,
+		logger:   logger,
+		bot:      bot,
+		httpPort: httpPort,
 	}, nil
 }
 
@@ -59,7 +62,15 @@ func (s *Service) StartPolling() {
 }
 
 func (s *Service) handleStartCommand(message *tgbotapi.Message) {
-	// For now, just log that we received the command.
-	// In the next step, we'll build the unique URL.
 	s.logger.Printf("Received /start command from user %d in chat %d", message.From.ID, message.Chat.ID)
+
+	// Generate a unique link for the user to connect their account.
+	token := message.From.ID
+	connectURL := fmt.Sprintf("http://localhost:%d/telegram/connect?token=%d", s.httpPort, token)
+
+	responseText := fmt.Sprintf("Welcome! To connect your account and receive email digests, please click this link:\n\n%s", connectURL)
+
+	if err := s.SendMessage(message.Chat.ID, responseText); err != nil {
+		s.logger.Printf("Failed to send connect message to user %d: %v", message.From.ID, err)
+	}
 } 
