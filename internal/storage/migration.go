@@ -2,12 +2,21 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"embed"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/sqlite3"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
+	_ "github.com/mattn/go-sqlite3" // Import the sqlite3 driver
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // migrationLock ensures only one migration can run at a time
 var migrationLock sync.Mutex
@@ -83,67 +92,37 @@ var migrations = []Migration{
 }
 
 // Migrate applies all pending database migrations
-func (s *SQLiteStorage) Migrate(ctx context.Context) error {
-	// Ensure only one migration runs at a time
-	migrationLock.Lock()
-	defer migrationLock.Unlock()
-
-	// Begin transaction
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s *SQLiteStorage) Migrate() error {
+	sourceInstance, err := iofs.New(migrationsFS, "migrations")
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return fmt.Errorf("failed to create migration source: %w", err)
 	}
-	defer tx.Rollback()
 
-	// Enable foreign key constraints
-	_, err = tx.ExecContext(ctx, "PRAGMA foreign_keys = ON")
+	// Re-open a connection for the migration tool, as the driver needs it.
+	db, err := sql.Open("sqlite3", s.path)
 	if err != nil {
-		return fmt.Errorf("failed to enable foreign keys: %w", err)
+		return fmt.Errorf("failed to open db for migration: %w", err)
 	}
+	defer db.Close()
 
-	// Create migrations table if it doesn't exist
-	_, err = tx.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version INTEGER PRIMARY KEY,
-			applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
+	driver, err := sqlite3.WithInstance(db, &sqlite3.Config{})
 	if err != nil {
-		return fmt.Errorf("failed to create migrations table: %w", err)
+		return fmt.Errorf("failed to create migration driver: %w", err)
 	}
 
-	// Get current version
-	var currentVersion int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&currentVersion)
+	m, err := migrate.NewWithDatabaseInstance(
+		"iofs",
+		sourceInstance,
+		"sqlite3", // The name of the database driver
+		driver,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to get current version: %w", err)
+		return fmt.Errorf("failed to create migrate instance: %w", err)
 	}
 
-	// Apply pending migrations
-	for _, migration := range migrations {
-		if migration.Version <= currentVersion {
-			continue
-		}
-
-		// Apply migration
-		_, err = tx.ExecContext(ctx, migration.SQL)
-		if err != nil {
-			return fmt.Errorf("failed to apply migration %d: %w", migration.Version, err)
-		}
-
-		// Record migration
-		_, err = tx.ExecContext(ctx,
-			"INSERT INTO schema_migrations (version) VALUES (?)",
-			migration.Version)
-		if err != nil {
-			return fmt.Errorf("failed to record migration %d: %w", migration.Version, err)
-		}
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+	err = m.Up()
+	if err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
 	return nil

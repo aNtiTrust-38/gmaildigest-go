@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -109,12 +110,31 @@ func (a *Application) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Application) handleTelegramConnect(w http.ResponseWriter, r *http.Request) {
-	// Placeholder for now. This will connect the logged-in user
-	// to the telegram user ID from the token.
-	token := r.URL.Query().Get("token")
+	tokenStr := r.URL.Query().Get("token")
+	if tokenStr == "" {
+		http.Error(w, "Missing token", http.StatusBadRequest)
+		return
+	}
+
+	telegramUserID, err := strconv.ParseInt(tokenStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid token", http.StatusBadRequest)
+		return
+	}
+
+	// The Telegram Chat ID is the same as the User ID for private chats.
+	telegramChatID := telegramUserID
+
 	userID := a.getUserIDFromContext(r)
 
-	a.logger.Printf("User %s is attempting to connect telegram account with token %s", userID, token)
+	err = a.storage.UpdateUserTelegramDetails(r.Context(), userID, telegramUserID, telegramChatID)
+	if err != nil {
+		a.logger.Printf("Failed to update telegram details for user %s: %v", userID, err)
+		http.Error(w, "Failed to connect account. Please try again.", http.StatusInternalServerError)
+		return
+	}
+
+	a.logger.Printf("User %s successfully connected telegram account with user ID %d", userID, telegramUserID)
 
 	// Respond with a simple success message
 	w.WriteHeader(http.StatusOK)

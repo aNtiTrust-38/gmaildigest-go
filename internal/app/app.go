@@ -41,6 +41,10 @@ func New(cfg *config.Config) (*Application, error) {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
+	if err := db.Migrate(); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	}
+
 	authService, err := auth.New(
 		cfg.Auth.ClientID,
 		cfg.Auth.ClientSecret,

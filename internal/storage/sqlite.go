@@ -28,12 +28,20 @@ type User struct {
 
 // SQLiteStorage handles all database operations
 type SQLiteStorage struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // NewSQLiteStorage creates a new SQLiteStorage instance
-func NewSQLiteStorage(db *sql.DB) *SQLiteStorage {
-	return &SQLiteStorage{db: db}
+func NewSQLiteStorage(path string) (*SQLiteStorage, error) {
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	return &SQLiteStorage{db: db, path: path}, nil
 }
 
 // validateInput checks if the input parameters are valid
@@ -236,4 +244,22 @@ func (s *SQLiteStorage) IsEmailProcessed(ctx context.Context, messageID, userID 
 		return false, fmt.Errorf("failed to check email status: %w", err)
 	}
 	return exists, nil
+}
+
+func (s *SQLiteStorage) UpdateUserTelegramDetails(ctx context.Context, userID string, telegramUserID, telegramChatID int64) error {
+	query := `UPDATE users SET telegram_user_id = ?, telegram_chat_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+	result, err := s.db.ExecContext(ctx, query, telegramUserID, telegramChatID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to update user telegram details: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 } 
