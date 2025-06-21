@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/go-playground/validator/v10"
 )
 
 // migrationLock ensures only one migration can run at a time

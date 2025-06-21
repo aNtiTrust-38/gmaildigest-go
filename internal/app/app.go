@@ -85,6 +85,7 @@ func New(cfg *config.Config) (*Application, error) {
 // Run starts the application.
 func (a *Application) Run() error {
 	a.logger.Printf("Starting server on %s", a.server.Addr)
+	go a.telegramService.StartPolling()
 	a.workerPool.Start()
 	a.scheduler.Start()
 	return a.server.ListenAndServe()
