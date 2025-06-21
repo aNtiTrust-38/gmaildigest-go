@@ -12,6 +12,7 @@ import (
 	"gmaildigest-go/internal/auth"
 	"gmaildigest-go/internal/config"
 	"gmaildigest-go/internal/scheduler"
+	"gmaildigest-go/internal/session"
 	"gmaildigest-go/internal/storage"
 	"gmaildigest-go/internal/worker"
 
@@ -25,6 +26,7 @@ type Application struct {
 	Scheduler     *scheduler.Scheduler
 	DB            *sql.DB
 	Auth          *auth.OAuthManager
+	SessionStore  session.Store
 	HttpServer    *http.Server
 	MetricsServer *http.Server
 	WorkerPool    *worker.WorkerPool
@@ -69,6 +71,9 @@ func New(cfg *config.Config) (*Application, error) {
 	// Register job handlers
 	sched.RegisterHandler("token_refresh", tokenRefreshService.HandleTokenRefreshJob)
 
+	// Setup: Session Store
+	sessionStore := session.NewInMemoryStore()
+
 	// Setup: HTTP Server for metrics
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
@@ -92,6 +97,7 @@ func New(cfg *config.Config) (*Application, error) {
 		WorkerPool:    pool,
 		Scheduler:     sched,
 		Auth:          oauthManager,
+		SessionStore:  sessionStore,
 		HttpServer:    httpServer,
 		MetricsServer: metricsServer,
 	}

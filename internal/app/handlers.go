@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"time"
 )
 
 //
@@ -44,22 +45,47 @@ func (a *Application) handleAuthCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	sessionID, err := a.SessionStore.Create(r.Context(), userID, 24*time.Hour)
+	if err != nil {
+		a.Logger.Printf("Failed to create session: %v", err)
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_id",
+		Value:    sessionID,
+		Expires:  time.Now().Add(24 * time.Hour),
+		HttpOnly: true,
+		Path:     "/",
+	})
+
 	// On success, redirect to the home page.
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // handleLogout clears the user's session and token data.
 func (a *Application) handleLogout(w http.ResponseWriter, r *http.Request) {
-	// TODO: Replace hardcoded userID with real session management
-	userID := "user-123"
-
-	err := a.Auth.RevokeToken(r.Context(), userID)
+	cookie, err := r.Cookie("session_id")
 	if err != nil {
-		a.Logger.Printf("Logout error: %v", err)
-		http.Error(w, "Failed to logout", http.StatusInternalServerError)
+		// If there's no cookie, there's nothing to do. Redirect to login.
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	sessionID := cookie.Value
 
-	// On success, redirect to the home page.
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	// Delete the session from the store. We ignore errors here.
+	_ = a.SessionStore.Delete(r.Context(), sessionID)
+
+	// Clear the cookie by setting its max-age to -1.
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_id",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+
+	// Redirect to the login page.
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
 } 

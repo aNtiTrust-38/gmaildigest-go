@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gmaildigest-go/internal/auth"
+	"gmaildigest-go/internal/session"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,8 +108,9 @@ func TestHandlers_AuthCallback(t *testing.T) {
 	pkceStore.StoreVerifier(state, verifier)
 
 	app := &Application{
-		Auth:   oauthManager,
-		Logger: log.New(io.Discard, "", 0),
+		Auth:         oauthManager,
+		SessionStore: session.NewInMemoryStore(),
+		Logger:       log.New(io.Discard, "", 0),
 	}
 
 	// Create a request with the necessary query parameters
@@ -128,35 +130,60 @@ func TestHandlers_AuthCallback(t *testing.T) {
 
 	// Assert: Check that a token was stored
 	assert.True(t, mockStorage.TokenWasStored(), "token was not stored")
+
+	// Assert: Check that a session cookie was set
+	cookies := rr.Result().Cookies()
+	assert.Len(t, cookies, 1, "expected exactly one cookie to be set")
+	sessionCookie := cookies[0]
+	assert.Equal(t, "session_id", sessionCookie.Name)
+	assert.NotEmpty(t, sessionCookie.Value)
+	assert.True(t, sessionCookie.HttpOnly)
 }
 
 func TestHandlers_Logout(t *testing.T) {
 	// Setup
-	mockStorage := &MockStorage{}
-	// Pre-seed the storage with a token to be deleted
-	mockStorage.StoreToken(context.Background(), "user-123", &oauth2.Token{})
+	ctx := context.Background()
+	store := session.NewInMemoryStore()
+	userID := "user-to-logout"
 
-	// The OAuthManager needs a concrete storage implementation that supports DeleteToken
-	oauthManager := auth.NewOAuthManager(mockStorage, nil, nil)
-
-	app := &Application{
-		Auth:   oauthManager,
-		Logger: log.New(io.Discard, "", 0),
-	}
-
-	req, err := http.NewRequest("GET", "/logout", nil)
+	// Create a session for the user
+	sessionID, err := store.Create(ctx, userID, time.Hour)
 	require.NoError(t, err)
 
+	app := &Application{
+		Logger:       log.New(io.Discard, "", 0),
+		SessionStore: store,
+	}
+
+	// Create a request with the session cookie
+	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "session_id",
+		Value: sessionID,
+	})
+
 	rr := httptest.NewRecorder()
+
+	// Execute
 	handler := http.HandlerFunc(app.handleLogout)
 	handler.ServeHTTP(rr, req)
 
-	// Assert: Check for redirect to home page
-	assert.Equal(t, http.StatusSeeOther, rr.Code, "handler returned wrong status code")
+	// Assert: Check for a redirect
+	assert.Equal(t, http.StatusSeeOther, rr.Code)
 	location, err := rr.Result().Location()
 	require.NoError(t, err)
-	assert.Equal(t, "/", location.Path, "handler redirected to wrong path")
+	assert.Equal(t, "/login", location.Path)
 
-	// Assert: Check that the token was deleted
-	assert.False(t, mockStorage.TokenWasStored(), "token was not deleted")
+	// Assert: Check that the session cookie was cleared
+	cookies := rr.Result().Cookies()
+	assert.Len(t, cookies, 1, "expected exactly one cookie")
+	cookie := cookies[0]
+	assert.Equal(t, "session_id", cookie.Name)
+	assert.Equal(t, "", cookie.Value)
+	assert.NotZero(t, cookie.MaxAge, "MaxAge should be set to clear the cookie")
+	assert.True(t, cookie.MaxAge < 0, "MaxAge should be negative to clear the cookie")
+
+	// Assert: Check that the session was deleted from the store
+	_, err = store.Get(ctx, sessionID)
+	assert.Error(t, err, "session should have been deleted from the store")
 } 
