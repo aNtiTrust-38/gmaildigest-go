@@ -5,47 +5,34 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/go-playground/validator/v10"
 )
 
-// Config represents the application configuration
+// Config holds all configuration for the application.
 type Config struct {
-	Telegram struct {
-		BotToken              string        `json:"bot_token" validate:"required" env:"TELEGRAM_BOT_TOKEN"`
-		DefaultDigestInterval Duration      `json:"default_digest_interval" validate:"min=1h" env:"TELEGRAM_DEFAULT_DIGEST_INTERVAL"`
-	} `json:"telegram"`
+	HTTPPort      int    `json:"http_port" validate:"gte=0"`
+	MetricsPort   int    `json:"metrics_port" validate:"gte=0"`
+	LogLevel      string `json:"log_level" validate:"oneof=debug info warn error"`
+	NumWorkers    int    `json:"num_workers" validate:"min=1"`
+	DBPath        string `json:"db_path" validate:"required"`
+	EncryptionKey string `json:"encryption_key" validate:"required,min=32"`
 
 	Auth struct {
-		CredentialsPath    string `json:"credentials_path" validate:"required,file" env:"AUTH_CREDENTIALS_PATH"`
-		TokenEncryptionKey string `json:"token_encryption_key" validate:"required,min=32" env:"AUTH_TOKEN_ENCRYPTION_KEY"`
+		ClientID       string `json:"client_id" validate:"required"`
+		ClientSecret   string `json:"client_secret" validate:"required"`
+		CredentialsPath string `json:"credentials_path" validate:"required,file"`
 	} `json:"auth"`
 
-	Gmail struct {
-		ForwardEmail string `json:"forward_email" validate:"omitempty,email" env:"GMAIL_FORWARD_EMAIL"`
-		BatchSize    int    `json:"batch_size" validate:"min=1,max=100" env:"GMAIL_BATCH_SIZE"`
-	} `json:"gmail"`
+	Telegram struct {
+		BotToken string `json:"bot_token" validate:"required"`
+	} `json:"telegram"`
 
-	Summary struct {
-		AnthropicAPIKey string   `json:"anthropic_api_key" env:"SUMMARY_ANTHROPIC_API_KEY"`
-		OpenAIAPIKey    string   `json:"openai_api_key" env:"SUMMARY_OPENAI_API_KEY"`
-		Timeout         Duration `json:"timeout" validate:"required,min=5s" env:"SUMMARY_TIMEOUT"`
-	} `json:"summary"`
-
-	DB struct {
-		FilePath      string `json:"file_path" validate:"required"`
-		EncryptionKey string `json:"encryption_key" validate:"required"`
-	} `json:"db"`
-
-	Worker struct {
-		NumWorkers int `json:"num_workers" validate:"min=1"`
-	} `json:"worker"`
-
-	Server struct {
-		Port        int `json:"port" validate:"min=1024,max=65535"`
-		MetricsPort int `json:"metrics_port" validate:"min=1024,max=65535"`
-	} `json:"server"`
+	Scheduler struct {
+		DefaultInterval Duration `json:"default_interval" validate:"min=1m"`
+	} `json:"scheduler"`
 }
 
 // Duration is a wrapper around time.Duration that implements JSON marshaling/unmarshaling
@@ -80,8 +67,8 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.String())
 }
 
-// LoadFromFile loads configuration from a JSON file and applies environment variable overrides
-func LoadFromFile(path string) (*Config, error) {
+// Load reads configuration from a file and overrides with environment variables.
+func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config file: %w", err)
@@ -92,19 +79,79 @@ func LoadFromFile(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
-	if err := cfg.applyEnvironmentOverrides(); err != nil {
+	if err := cfg.applyEnvOverrides(); err != nil {
 		return nil, fmt.Errorf("applying environment overrides: %w", err)
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
 	return &cfg, nil
 }
 
-// Validate performs validation on the configuration values
-func (c *Config) Validate() error {
+// applyEnvOverrides overrides config fields with environment variables.
+func (c *Config) applyEnvOverrides() error {
+	// Telegram overrides
+	if v := os.Getenv("TELEGRAM_BOT_TOKEN"); v != "" {
+		c.Telegram.BotToken = v
+	}
+
+	// Auth overrides
+	if v := os.Getenv("AUTH_CLIENT_ID"); v != "" {
+		c.Auth.ClientID = v
+	}
+	if v := os.Getenv("AUTH_CLIENT_SECRET"); v != "" {
+		c.Auth.ClientSecret = v
+	}
+
+	// HTTPPort overrides
+	if v := os.Getenv("HTTP_PORT"); v != "" {
+		var err error
+		c.HTTPPort, err = parseInt(v)
+		if err != nil {
+			return fmt.Errorf("parsing HTTP_PORT: %w", err)
+		}
+	}
+
+	// MetricsPort overrides
+	if v := os.Getenv("METRICS_PORT"); v != "" {
+		var err error
+		c.MetricsPort, err = parseInt(v)
+		if err != nil {
+			return fmt.Errorf("parsing METRICS_PORT: %w", err)
+		}
+	}
+
+	// LogLevel overrides
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		c.LogLevel = v
+	}
+
+	// DBPath overrides
+	if v := os.Getenv("DB_PATH"); v != "" {
+		c.DBPath = v
+	}
+
+	// EncryptionKey overrides
+	if v := os.Getenv("ENCRYPTION_KEY"); v != "" {
+		c.EncryptionKey = v
+	}
+
+	// Scheduler overrides
+	if v := os.Getenv("SCHEDULER_DEFAULT_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parsing SCHEDULER_DEFAULT_INTERVAL: %w", err)
+		}
+		c.Scheduler.DefaultInterval = Duration{d}
+	}
+
+	return nil
+}
+
+// validate checks the configuration for errors.
+func (c *Config) validate() error {
 	validate := validator.New()
 
 	// Register custom validation for Duration
@@ -127,97 +174,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// applyEnvironmentOverrides checks for environment variables and overrides config values
-func (c *Config) applyEnvironmentOverrides() error {
-	// Telegram overrides
-	if v := os.Getenv("TELEGRAM_BOT_TOKEN"); v != "" {
-		c.Telegram.BotToken = v
-	}
-	if v := os.Getenv("TELEGRAM_DEFAULT_DIGEST_INTERVAL"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return fmt.Errorf("parsing TELEGRAM_DEFAULT_DIGEST_INTERVAL: %w", err)
-		}
-		c.Telegram.DefaultDigestInterval = Duration{d}
-	}
-
-	// Auth overrides
-	if v := os.Getenv("AUTH_CREDENTIALS_PATH"); v != "" {
-		c.Auth.CredentialsPath = v
-	}
-	if v := os.Getenv("AUTH_TOKEN_ENCRYPTION_KEY"); v != "" {
-		c.Auth.TokenEncryptionKey = v
-	}
-
-	// Gmail overrides
-	if v := os.Getenv("GMAIL_FORWARD_EMAIL"); v != "" {
-		c.Gmail.ForwardEmail = v
-	}
-	if v := os.Getenv("GMAIL_BATCH_SIZE"); v != "" {
-		var err error
-		c.Gmail.BatchSize, err = parseInt(v)
-		if err != nil {
-			return fmt.Errorf("parsing GMAIL_BATCH_SIZE: %w", err)
-		}
-	}
-
-	// Summary overrides
-	if v := os.Getenv("SUMMARY_ANTHROPIC_API_KEY"); v != "" {
-		c.Summary.AnthropicAPIKey = v
-	}
-	if v := os.Getenv("SUMMARY_OPENAI_API_KEY"); v != "" {
-		c.Summary.OpenAIAPIKey = v
-	}
-	if v := os.Getenv("SUMMARY_TIMEOUT"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return fmt.Errorf("parsing SUMMARY_TIMEOUT: %w", err)
-		}
-		c.Summary.Timeout = Duration{d}
-	}
-
-	// DBPath overrides
-	if v := os.Getenv("DB_FILE_PATH"); v != "" {
-		c.DB.FilePath = v
-	}
-	if v := os.Getenv("DB_ENCRYPTION_KEY"); v != "" {
-		c.DB.EncryptionKey = v
-	}
-
-	// Worker overrides
-	if v := os.Getenv("WORKER_NUM_WORKERS"); v != "" {
-		var err error
-		c.Worker.NumWorkers, err = parseInt(v)
-		if err != nil {
-			return fmt.Errorf("parsing WORKER_NUM_WORKERS: %w", err)
-		}
-	}
-
-	// Server overrides
-	if v := os.Getenv("SERVER_PORT"); v != "" {
-		var err error
-		c.Server.Port, err = parseInt(v)
-		if err != nil {
-			return fmt.Errorf("parsing SERVER_PORT: %w", err)
-		}
-	}
-	if v := os.Getenv("SERVER_METRICS_PORT"); v != "" {
-		var err error
-		c.Server.MetricsPort, err = parseInt(v)
-		if err != nil {
-			return fmt.Errorf("parsing SERVER_METRICS_PORT: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// parseInt parses a string to an integer with error handling
 func parseInt(s string) (int, error) {
-	var i int
-	_, err := fmt.Sscanf(s, "%d", &i)
-	if err != nil {
-		return 0, err
-	}
-	return i, nil
+	return strconv.Atoi(s)
 } 

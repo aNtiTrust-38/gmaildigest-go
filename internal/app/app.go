@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,166 +13,89 @@ import (
 	"gmaildigest-go/internal/scheduler"
 	"gmaildigest-go/internal/session"
 	"gmaildigest-go/internal/storage"
+	"gmaildigest-go/internal/telegram"
 	"gmaildigest-go/internal/worker"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/go-co-op/gocron/v2"
 )
 
-// Application holds all the major components of the service.
+// Application holds the application's dependencies
 type Application struct {
-	Config        *config.Config
-	Logger        *log.Logger
-	Scheduler     *scheduler.Scheduler
-	DB            *sql.DB
-	Auth          *auth.OAuthManager
-	SessionStore  session.Store
-	HttpServer    *http.Server
-	MetricsServer *http.Server
-	WorkerPool    *worker.WorkerPool
+	logger          *log.Logger
+	config          *config.Config
+	server          *http.Server
+	authService     *auth.AuthService
+	sessionStore    session.Store
+	storage         storage.Storage
+	scheduler       gocron.Scheduler
+	workerPool      *worker.Pool
+	telegramService *telegram.Service
 }
 
-// New creates and initializes a new Application instance.
+// New creates a new Application.
 func New(cfg *config.Config) (*Application, error) {
-	logger := log.New(os.Stdout, "gmaildigest: ", log.LstdFlags)
+	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 
-	// Setup: Database
-	db, err := sql.Open("sqlite3", cfg.DB.FilePath)
+	db, err := storage.NewSQLiteStorage(cfg.DBPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
-	storageInstance := storage.NewSQLiteStorage(db)
-	if err := storageInstance.Migrate(context.Background()); err != nil {
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
-	// Setup: WorkerPool
-	pool := worker.NewWorkerPool(cfg.Worker.NumWorkers)
-
-	// Setup: Scheduler
-	sched, err := scheduler.NewScheduler(context.Background(), db, pool)
+	authService, err := auth.New(
+		cfg.Auth.ClientID,
+		cfg.Auth.ClientSecret,
+		fmt.Sprintf("http://localhost:%d/auth/callback", cfg.HTTPPort),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create scheduler: %w", err)
+		return nil, fmt.Errorf("failed to create auth service: %w", err)
 	}
 
-	// Setup: Auth Manager
-	tokenStore := storage.NewTokenStore(storageInstance, []byte(cfg.Auth.TokenEncryptionKey))
-	pkceStore := auth.NewInMemoryPKCEStore()
-	stateStore := auth.NewInMemoryStateStore()
-	oauthManager := auth.NewOAuthManager(tokenStore, pkceStore, stateStore)
-	if err := oauthManager.LoadCredentials(cfg.Auth.CredentialsPath); err != nil {
-		return nil, fmt.Errorf("failed to load credentials: %w", err)
-	}
-
-	// Setup: TokenRefreshService
-	tokenRefreshService := auth.NewTokenRefreshService(oauthManager)
-
-	// Register job handlers
-	sched.RegisterHandler("token_refresh", tokenRefreshService.HandleTokenRefreshJob)
-
-	// Setup: Session Store
 	sessionStore := session.NewInMemoryStore()
+	workerPool := worker.NewPool(cfg.NumWorkers)
 
-	// Setup: HTTP Server for metrics
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/metrics", promhttp.Handler())
-	metricsServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Server.MetricsPort),
-		Handler: metricsMux,
-	}
-
-	// Setup: Main HTTP Server
-	httpMux := http.NewServeMux()
-	// TODO: Add main application handlers to httpMux
-	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler: httpMux,
+	telegramService, err := telegram.NewService(cfg.Telegram.BotToken, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create telegram service: %w", err)
 	}
 
 	app := &Application{
-		Config:        cfg,
-		Logger:        logger,
-		DB:            db,
-		WorkerPool:    pool,
-		Scheduler:     sched,
-		Auth:          oauthManager,
-		SessionStore:  sessionStore,
-		HttpServer:    httpServer,
-		MetricsServer: metricsServer,
+		logger:          logger,
+		config:          cfg,
+		authService:     authService,
+		sessionStore:    sessionStore,
+		storage:         db,
+		workerPool:      workerPool,
+		telegramService: telegramService,
 	}
 
-	// Register HTTP handlers
-	httpMux.HandleFunc("/login", app.handleLogin)
-	httpMux.HandleFunc("/auth/callback", app.handleAuthCallback)
-	httpMux.HandleFunc("/logout", app.handleLogout)
+	app.server = &http.Server{
+		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
+		Handler: app.routes(),
+	}
 
-	// Protected routes
-	httpMux.Handle("/dashboard", app.requireAuth(http.HandlerFunc(app.handleDashboard)))
-	httpMux.Handle("/", app.requireAuth(http.RedirectHandler("/dashboard", http.StatusTemporaryRedirect)))
+	s, err := scheduler.New(logger, app.workerPool, app.storage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create scheduler: %w", err)
+	}
+	app.scheduler = s
 
 	return app, nil
 }
 
-// Start begins the application's services.
-func (a *Application) Start(ctx context.Context) error {
-	a.Logger.Println("Starting application services...")
-
-	// Start the worker pool
-	a.WorkerPool.Start()
-	a.Logger.Println("Worker pool started.")
-
-	// Start the scheduler
-	a.Scheduler.Start()
-	a.Logger.Println("Scheduler started.")
-
-	// Start the metrics server
-	go func() {
-		a.Logger.Printf("Starting metrics server on %s", a.MetricsServer.Addr)
-		if err := a.MetricsServer.ListenAndServe(); err != http.ErrServerClosed {
-			a.Logger.Fatalf("Metrics server ListenAndServe: %v", err)
-		}
-	}()
-
-	// Start the main HTTP server
-	go func() {
-		a.Logger.Printf("Starting HTTP server on %s", a.HttpServer.Addr)
-		if err := a.HttpServer.ListenAndServe(); err != http.ErrServerClosed {
-			a.Logger.Fatalf("HTTP server ListenAndServe: %v", err)
-		}
-	}()
-
-	return nil
+// Run starts the application.
+func (a *Application) Run() error {
+	a.logger.Printf("Starting server on %s", a.server.Addr)
+	a.workerPool.Start()
+	a.scheduler.Start()
+	return a.server.ListenAndServe()
 }
 
-// Stop gracefully shuts down the application's services.
-func (a *Application) Stop(ctx context.Context) error {
-	a.Logger.Println("Stopping application services...")
-
-	// Shutdown servers
-	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	if err := a.HttpServer.Shutdown(shutdownCtx); err != nil {
-		a.Logger.Printf("HTTP server shutdown error: %v", err)
+// Shutdown gracefully shuts down the application.
+func (a *Application) Shutdown(ctx context.Context) error {
+	a.logger.Println("Shutting down server...")
+	a.workerPool.Stop()
+	if err := a.scheduler.Shutdown(); err != nil {
+		a.logger.Printf("Error shutting down scheduler: %v", err)
 	}
-
-	if err := a.MetricsServer.Shutdown(shutdownCtx); err != nil {
-		a.Logger.Printf("Metrics server shutdown error: %v", err)
-	}
-
-	// Stop the scheduler
-	a.Scheduler.Stop()
-	a.Logger.Println("Scheduler stopped.")
-
-	// Stop the worker pool
-	a.WorkerPool.Stop()
-	a.Logger.Println("Worker pool stopped.")
-
-	// Close the database connection
-	if err := a.DB.Close(); err != nil {
-		a.Logger.Printf("Error closing database: %v", err)
-	}
-
-	a.Logger.Println("Application stopped gracefully.")
-	return nil
+	return a.server.Shutdown(ctx)
 } 
