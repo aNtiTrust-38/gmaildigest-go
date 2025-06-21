@@ -2,6 +2,7 @@ package gmail
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -49,6 +50,10 @@ func (s *Service) FetchUnreadEmails(ctx context.Context) ([]models.Email, error)
 			s.logger.Printf("Failed to get message %s: %v", msgRef.Id, err)
 			continue // Skip to the next message
 		}
+
+		// Add detailed logging
+		msgJSON, _ := json.Marshal(msg)
+		s.logger.Printf("Received message %s: %s", msgRef.Id, string(msgJSON))
 
 		parsedEmail, err := s.parseEmail(msg)
 		if err != nil {
@@ -114,8 +119,14 @@ func (s *Service) parseEmail(msg *gmail.Message) (*models.Email, error) {
 		email.Body = string(body)
 	} else {
 		// Handle multipart messages
-		for _, part := range msg.Payload.Parts {
-			if part.MimeType == "text/plain" && part.Body != nil && part.Body.Data != "" {
+		for i := 0; i < len(msg.Payload.Parts); i++ {
+			part := msg.Payload.Parts[i]
+			if part == nil {
+				continue
+			}
+			partJSON, _ := json.Marshal(part)
+			s.logger.Printf("Processing part: %s", string(partJSON))
+			if part.Body != nil && part.MimeType == "text/plain" && part.Body.Data != "" {
 				body, err := base64.URLEncoding.DecodeString(part.Body.Data)
 				if err != nil {
 					return nil, fmt.Errorf("failed to decode multipart body: %w", err)
